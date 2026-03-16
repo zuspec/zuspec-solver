@@ -1,0 +1,8 @@
+{
+  "solver": "python",
+  "scenario": "bustransaction",
+  "n_solutions": 2500,
+  "bench_ns": 1065512531,
+  "ns_per_solution": 426205.0124,
+  "solutions_per_s": 2346.2886894945395
+}

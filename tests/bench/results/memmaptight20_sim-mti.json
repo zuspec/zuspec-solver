@@ -1,0 +1,8 @@
+{
+  "solver": "sim-mti",
+  "scenario": "memmaptight20",
+  "n_solutions": 1000,
+  "bench_ns": 355818975,
+  "ns_per_solution": 355818.975,
+  "solutions_per_s": 2810.4178536290824
+}

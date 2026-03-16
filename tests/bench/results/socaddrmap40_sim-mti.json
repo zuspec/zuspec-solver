@@ -1,0 +1,8 @@
+{
+  "solver": "sim-mti",
+  "scenario": "socaddrmap40",
+  "n_solutions": 1000,
+  "bench_ns": 181156153,
+  "ns_per_solution": 181156.153,
+  "solutions_per_s": 5520.0995574243625
+}

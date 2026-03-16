@@ -1,0 +1,8 @@
+{
+  "solver": "python",
+  "scenario": "socaddrmap32",
+  "n_solutions": 1000,
+  "bench_ns": 6326456434,
+  "ns_per_solution": 6326456.434,
+  "solutions_per_s": 158.0663694490558
+}

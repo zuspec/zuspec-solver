@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zuspec-solver"
+version = "0.0.1"
+description = "Zuspec high-performance constraint solver"
+readme = "README.md"
+requires-python = ">=3.7"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "Matthew Ballance", email = "matt.ballance@gmail.com"}
+]
+
+dependencies = [
+    "zuspec-dataclasses",
+    "zuspec-be-sv",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0",
+    "dv-flow-mgr",
+    "dv-flow-libhdlsim",
+]
+
+[project.entry-points."zuspec.solver.backend"]
+native = "zuspec.solver.backend:NativeSolverBackend"
+
+[tool.setuptools]
+packages = ["zuspec.solver"]
+package-dir = {"" = "src"}

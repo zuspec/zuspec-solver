@@ -1,0 +1,8 @@
+{
+  "solver": "native",
+  "scenario": "bustransaction",
+  "n_solutions": 82000,
+  "bench_ns": 1000037864,
+  "ns_per_solution": 12195.583707317073,
+  "solutions_per_s": 81996.89526955751
+}

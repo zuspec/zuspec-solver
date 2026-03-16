@@ -1,0 +1,8 @@
+{
+  "solver": "sim-vlt",
+  "scenario": "bustransaction",
+  "n_solutions": 1000,
+  "bench_ns": 34067270970,
+  "ns_per_solution": 34067270.97,
+  "solutions_per_s": 29.353686735888253
+}

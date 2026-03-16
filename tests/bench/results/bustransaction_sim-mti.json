@@ -1,0 +1,8 @@
+{
+  "solver": "sim-mti",
+  "scenario": "bustransaction",
+  "n_solutions": 1000,
+  "bench_ns": 95968175,
+  "ns_per_solution": 95968.175,
+  "solutions_per_s": 10420.121045336124
+}

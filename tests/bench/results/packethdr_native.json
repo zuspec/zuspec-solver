@@ -1,0 +1,8 @@
+{
+  "solver": "native",
+  "scenario": "packethdr",
+  "n_solutions": 84000,
+  "bench_ns": 1000847204,
+  "ns_per_solution": 11914.847666666667,
+  "solutions_per_s": 83928.895104352
+}

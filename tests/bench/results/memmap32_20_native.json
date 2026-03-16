@@ -1,0 +1,8 @@
+{
+  "solver": "native",
+  "scenario": "memmap32_20",
+  "n_solutions": 13500,
+  "bench_ns": 1035981372,
+  "ns_per_solution": 76739.36088888888,
+  "solutions_per_s": 13031.122339524074
+}

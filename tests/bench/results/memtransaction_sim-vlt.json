@@ -1,0 +1,8 @@
+{
+  "solver": "sim-vlt",
+  "scenario": "memtransaction",
+  "n_solutions": 1000,
+  "bench_ns": 25792008808,
+  "ns_per_solution": 25792008.808,
+  "solutions_per_s": 38.77169891822565
+}

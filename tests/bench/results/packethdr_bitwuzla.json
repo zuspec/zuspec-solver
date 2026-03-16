@@ -1,0 +1,8 @@
+{
+  "solver": "bitwuzla",
+  "scenario": "packethdr",
+  "n_solutions": 1000,
+  "bench_ns": 1826786367,
+  "ns_per_solution": 1826786.367,
+  "solutions_per_s": 547.4093840771476
+}

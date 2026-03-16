@@ -1,0 +1,8 @@
+{
+  "solver": "bitwuzla",
+  "scenario": "socaddrmap40",
+  "n_solutions": 1000,
+  "bench_ns": 5291058769,
+  "ns_per_solution": 5291058.769,
+  "solutions_per_s": 188.99808973185873
+}

@@ -1,0 +1,8 @@
+{
+  "solver": "sim-mti",
+  "scenario": "packethdr",
+  "n_solutions": 1000,
+  "bench_ns": 103682416,
+  "ns_per_solution": 103682.416,
+  "solutions_per_s": 9644.836979879019
+}

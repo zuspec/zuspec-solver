@@ -1,0 +1,8 @@
+{
+  "solver": "sim-mti",
+  "scenario": "memtransaction",
+  "n_solutions": 1000,
+  "bench_ns": 93095728,
+  "ns_per_solution": 93095.728,
+  "solutions_per_s": 10741.63145273433
+}

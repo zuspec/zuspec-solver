@@ -1,0 +1,8 @@
+{
+  "solver": "bitwuzla",
+  "scenario": "fifoctrl",
+  "n_solutions": 1000,
+  "bench_ns": 1747554026,
+  "ns_per_solution": 1747554.026,
+  "solutions_per_s": 572.2283747009033
+}
