@@ -1,8 +1,0 @@
-{
-  "solver": "python",
-  "scenario": "memtransaction",
-  "n_solutions": 3500,
-  "bench_ns": 1131026713,
-  "ns_per_solution": 323150.4894285714,
-  "solutions_per_s": 3094.533453340284
-}

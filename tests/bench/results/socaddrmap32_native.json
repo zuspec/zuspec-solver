@@ -1,8 +1,0 @@
-{
-  "solver": "native",
-  "scenario": "socaddrmap32",
-  "n_solutions": 36000,
-  "bench_ns": 1007153596,
-  "ns_per_solution": 27976.488777777777,
-  "solutions_per_s": 35744.29972049665
-}

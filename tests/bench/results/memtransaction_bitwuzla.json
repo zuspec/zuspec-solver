@@ -1,8 +1,0 @@
-{
-  "solver": "bitwuzla",
-  "scenario": "memtransaction",
-  "n_solutions": 1000,
-  "bench_ns": 1672221112,
-  "ns_per_solution": 1672221.112,
-  "solutions_per_s": 598.0070415472665
-}

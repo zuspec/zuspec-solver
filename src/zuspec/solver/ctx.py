@@ -29,9 +29,10 @@ _CTX_BUF_SIZE = 1 << 20  # 1 MiB — headroom for propagators + decisions
 
 # ------------------------------------------------------------------ #
 # SolveOpts ctypes struct                                              #
-# Layout (must match zsp_search.h exactly):                           #
-#   seed(uint64=8) + max_conflicts(uint32=4) + max_restarts(uint32=4) #
-#   + use_phase_save(uint8=1) + _pad[3]  → total 20 bytes            #
+# Layout (must match zsp_search.h exactly):                            #
+#   seed(uint64=8) + max_conflicts(uint32=4) + max_restarts(uint32=4)  #
+#   + use_phase_save(uint8=1) + _pad[3] + max_shave_iters(uint32=4)   #
+#   → total 24 bytes                                                   #
 # ------------------------------------------------------------------ #
 class _SolveOpts(ctypes.Structure):
     _fields_ = [
@@ -40,6 +41,7 @@ class _SolveOpts(ctypes.Structure):
         ("max_restarts",   ctypes.c_uint32),
         ("use_phase_save", ctypes.c_uint8),
         ("_pad",           ctypes.c_uint8 * 3),
+        ("max_shave_iters", ctypes.c_uint32),
     ]
 
 
@@ -124,6 +126,7 @@ class SolveCtx:
         max_conflicts: int = 0,
         max_restarts: int = 0,
         use_phase_save: bool = False,
+        max_shave_iters: int = 0,
     ) -> int:
         """Run the search loop; returns SOLVE_OK, SOLVE_UNSAT, or SOLVE_TIMEOUT."""
         opts = _SolveOpts(
@@ -131,6 +134,7 @@ class SolveCtx:
             max_conflicts=max_conflicts,
             max_restarts=max_restarts,
             use_phase_save=1 if use_phase_save else 0,
+            max_shave_iters=max_shave_iters,
         )
         return self._lib.solver_solve(self._ctx, ctypes.byref(opts))
 

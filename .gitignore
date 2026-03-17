@@ -208,4 +208,4 @@ __marimo__/
 
 # Benchmark result files
 tests/bench/sim/results/*.json
-tests/benchmark/results/*.json
+tests/bench/results/

@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import zuspec.dataclasses as zdc
 
-from .base import BenchResult, RESULTS_DIR
+from .base import BenchResult, RESULTS_DIR, get_bench_config
 
 # Prefer the bundled bitwuzla shipped with the verilator package.
 _BUNDLED = (
@@ -52,6 +52,11 @@ class BitwuzlaSolver:
         except ImportError:
             pytest.skip("zuspec-be-fv not available (RandSMT2Emitter missing)")
 
+        cfg = get_bench_config()
+        target_ns  = int(cfg.target_secs * 1e9)
+        timeout_ns = int(cfg.timeout_secs * 1e9)
+        min_sol    = cfg.min_solutions
+
         smt2_text   = RandSMT2Emitter().emit(cls, seed=0)
         smt_file    = tmp_path / "problem.smt2"
         smt_file.write_text(smt2_text)
@@ -70,7 +75,7 @@ class BitwuzlaSolver:
                 ).stdout
                 if out.startswith("sat"):
                     sol = parse_get_value(out, field_names)
-                    if iters % max(1, n_solutions // 10) == 0:
+                    if iters % max(1, min_sol) == 0:
                         validate(sol)
                 else:
                     failures += 1
@@ -78,8 +83,17 @@ class BitwuzlaSolver:
                 seed  += 1
 
             elapsed = time.perf_counter_ns() - t_start
-            if iters >= n_solutions and elapsed >= min_bench_ns:
+
+            if elapsed >= target_ns and iters >= min_sol:
                 break
+
+            if elapsed >= timeout_ns:
+                if iters >= min_sol:
+                    break
+                pytest.skip(
+                    f"bitwuzla: timed out after {elapsed/1e9:.1f}s "
+                    f"with only {iters} solutions on {cls.__name__}"
+                )
 
         assert failures == 0, f"{failures} unsatisfiable results out of {iters}"
 

@@ -1,8 +1,0 @@
-{
-  "solver": "bitwuzla",
-  "scenario": "bustransaction",
-  "n_solutions": 1000,
-  "bench_ns": 1905972456,
-  "ns_per_solution": 1905972.456,
-  "solutions_per_s": 524.6665537332403
-}

@@ -1,8 +1,0 @@
-{
-  "solver": "native",
-  "scenario": "fifoctrl",
-  "n_solutions": 83000,
-  "bench_ns": 1000749534,
-  "ns_per_solution": 12057.22330120482,
-  "solutions_per_s": 82937.83527257679
-}

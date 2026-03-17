@@ -1,8 +1,0 @@
-{
-  "solver": "sim-vlt",
-  "scenario": "packethdr",
-  "n_solutions": 1000,
-  "bench_ns": 21182326218,
-  "ns_per_solution": 21182326.218,
-  "solutions_per_s": 47.20916813896648
-}

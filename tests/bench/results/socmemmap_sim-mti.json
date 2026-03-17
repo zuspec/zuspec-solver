@@ -1,8 +1,0 @@
-{
-  "solver": "sim-mti",
-  "scenario": "socmemmap",
-  "n_solutions": 1000,
-  "bench_ns": 114624251,
-  "ns_per_solution": 114624.251,
-  "solutions_per_s": 8724.157333861227
-}

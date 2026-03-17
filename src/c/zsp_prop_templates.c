@@ -203,15 +203,40 @@ static PropResult _fire_bounds_add_32(Propagator *self, SolveCtx *ctx) {
     Variable      *b   = &ctx->vars[bid];
 
     PropResult res;
-    /* r in [a.lo+b.lo, a.hi+b.hi] */
-    if ((res = ctx_tighten_lb32(ctx, rid, a->lo + b->lo)) != PROP_OK) return res;
-    if ((res = ctx_tighten_ub32(ctx, rid, a->hi + b->hi)) != PROP_OK) return res;
+    /* Use 64-bit intermediate arithmetic to avoid int32 overflow when
+     * summing large unsigned 32-bit bounds (e.g. 0x7FFFFFFF + 0x02000000). */
+    int64_t alo = a->lo, ahi = a->hi, blo = b->lo, bhi = b->hi;
+    int64_t rlo = r->lo, rhi = r->hi;
+
+    /* r in [a.lo+b.lo, a.hi+b.hi], clamped to int32 range */
+    int64_t fwd_lo = alo + blo;
+    int64_t fwd_hi = ahi + bhi;
+    if (fwd_lo > INT32_MAX) fwd_lo = INT32_MAX;
+    if (fwd_lo < INT32_MIN) fwd_lo = INT32_MIN;
+    if (fwd_hi > INT32_MAX) fwd_hi = INT32_MAX;
+    if (fwd_hi < INT32_MIN) fwd_hi = INT32_MIN;
+    if ((res = ctx_tighten_lb32(ctx, rid, (int32_t)fwd_lo)) != PROP_OK) return res;
+    if ((res = ctx_tighten_ub32(ctx, rid, (int32_t)fwd_hi)) != PROP_OK) return res;
+
+    /* Re-read r bounds after possible tightening */
+    rlo = r->lo; rhi = r->hi;
+
     /* a in [r.lo-b.hi, r.hi-b.lo] */
-    if ((res = ctx_tighten_lb32(ctx, aid, r->lo - b->hi)) != PROP_OK) return res;
-    if ((res = ctx_tighten_ub32(ctx, aid, r->hi - b->lo)) != PROP_OK) return res;
+    int64_t a_new_lo = rlo - bhi;
+    int64_t a_new_hi = rhi - blo;
+    if (a_new_lo < INT32_MIN) a_new_lo = INT32_MIN;
+    if (a_new_hi > INT32_MAX) a_new_hi = INT32_MAX;
+    if ((res = ctx_tighten_lb32(ctx, aid, (int32_t)a_new_lo)) != PROP_OK) return res;
+    if ((res = ctx_tighten_ub32(ctx, aid, (int32_t)a_new_hi)) != PROP_OK) return res;
+
     /* b in [r.lo-a.hi, r.hi-a.lo] */
-    if ((res = ctx_tighten_lb32(ctx, bid, r->lo - a->hi)) != PROP_OK) return res;
-    if ((res = ctx_tighten_ub32(ctx, bid, r->hi - a->lo)) != PROP_OK) return res;
+    alo = a->lo; ahi = a->hi;  /* re-read after tightening */
+    int64_t b_new_lo = rlo - ahi;
+    int64_t b_new_hi = rhi - alo;
+    if (b_new_lo < INT32_MIN) b_new_lo = INT32_MIN;
+    if (b_new_hi > INT32_MAX) b_new_hi = INT32_MAX;
+    if ((res = ctx_tighten_lb32(ctx, bid, (int32_t)b_new_lo)) != PROP_OK) return res;
+    if ((res = ctx_tighten_ub32(ctx, bid, (int32_t)b_new_hi)) != PROP_OK) return res;
 
     if (r->lo == r->hi && a->lo == a->hi && b->lo == b->hi) return PROP_ENTAILED;
     return PROP_OK;
@@ -243,9 +268,15 @@ static PropResult _fire_bounds_mul_32(Propagator *self, SolveCtx *ctx) {
         if (k > 0) {
             if ((res = ctx_tighten_lb32(ctx, rid, k * b->lo)) != PROP_OK) return res;
             if ((res = ctx_tighten_ub32(ctx, rid, k * b->hi)) != PROP_OK) return res;
+            /* Backward: b = r / k */
+            if ((res = ctx_tighten_lb32(ctx, bid, r->lo / k)) != PROP_OK) return res;
+            if ((res = ctx_tighten_ub32(ctx, bid, r->hi / k)) != PROP_OK) return res;
         } else if (k < 0) {
             if ((res = ctx_tighten_lb32(ctx, rid, k * b->hi)) != PROP_OK) return res;
             if ((res = ctx_tighten_ub32(ctx, rid, k * b->lo)) != PROP_OK) return res;
+            /* Backward: b = r / k (reversed due to negative k) */
+            if ((res = ctx_tighten_lb32(ctx, bid, r->hi / k)) != PROP_OK) return res;
+            if ((res = ctx_tighten_ub32(ctx, bid, r->lo / k)) != PROP_OK) return res;
         }
     }
     if (b->lo == b->hi) {
@@ -253,12 +284,17 @@ static PropResult _fire_bounds_mul_32(Propagator *self, SolveCtx *ctx) {
         if (k > 0) {
             if ((res = ctx_tighten_lb32(ctx, rid, a->lo * k)) != PROP_OK) return res;
             if ((res = ctx_tighten_ub32(ctx, rid, a->hi * k)) != PROP_OK) return res;
+            /* Backward: a = r / k */
+            if ((res = ctx_tighten_lb32(ctx, aid, r->lo / k)) != PROP_OK) return res;
+            if ((res = ctx_tighten_ub32(ctx, aid, r->hi / k)) != PROP_OK) return res;
         } else if (k < 0) {
             if ((res = ctx_tighten_lb32(ctx, rid, a->hi * k)) != PROP_OK) return res;
             if ((res = ctx_tighten_ub32(ctx, rid, a->lo * k)) != PROP_OK) return res;
+            /* Backward: a = r / k (reversed due to negative k) */
+            if ((res = ctx_tighten_lb32(ctx, aid, r->hi / k)) != PROP_OK) return res;
+            if ((res = ctx_tighten_ub32(ctx, aid, r->lo / k)) != PROP_OK) return res;
         }
     }
-    (void)r;
     return PROP_OK;
 }
 
@@ -696,5 +732,103 @@ uint32_t prop_add_bit_slice_64(SolveCtx *ctx, uint32_t r_id, uint32_t a_id,
     if (ref == EXPR_NULL) return EXPR_NULL;
     BitSlice_64_t *p = (BitSlice_64_t *)zsp_pool_ptr(&ctx->pool, ref);
     p->hi_bit = hi_bit; p->lo_bit = lo_bit;
+    return ref;
+}
+
+/* ------------------------------------------------------------------ */
+/* DisjClause: (v0 op0 c0) OR ... OR (vN opN cN)                     */
+/*                                                                     */
+/* Fire logic: check each clause against current bounds.              */
+/* "definitely false" means every value in the domain violates it.    */
+/* When all but one are definitely false, enforce the survivor.       */
+/* ------------------------------------------------------------------ */
+
+/** Is comparison (lo..hi) op constant definitely false? */
+static int _clause_definitely_false(Variable *v, SolveCtx *ctx,
+                                     uint32_t op, int64_t c) {
+    int64_t lo = var_lo64(ctx, v);
+    int64_t hi = var_hi64(ctx, v);
+    /* Negate the op and check if negation is definitely true */
+    switch (op) {
+    case BIN_EQ:   return (lo > c || hi < c);        /* !(lo <= c <= hi) */
+    case BIN_NEQ:  return (lo == hi && lo == c);      /* singleton == c */
+    case BIN_LT:   return (lo >= c);                  /* all >= c => none < c */
+    case BIN_LTE:  return (lo > c);
+    case BIN_GT:   return (hi <= c);
+    case BIN_GTE:  return (hi < c);
+    default:       return 0;
+    }
+}
+
+/** Enforce clause: tighten var's domain so (var op constant) can hold. */
+static PropResult _enforce_clause(SolveCtx *ctx, uint32_t var_id,
+                                   uint32_t op, int64_t c) {
+    switch (op) {
+    case BIN_EQ:
+        if (ctx_tighten_lb64(ctx, var_id, c) == PROP_CONFLICT) return PROP_CONFLICT;
+        if (ctx_tighten_ub64(ctx, var_id, c) == PROP_CONFLICT) return PROP_CONFLICT;
+        return PROP_OK;
+    case BIN_NEQ:
+        /* Can only tighten if domain is singleton or c is at a bound */
+        {
+            int64_t lo = var_lo64(ctx, &ctx->vars[var_id]);
+            int64_t hi = var_hi64(ctx, &ctx->vars[var_id]);
+            if (lo == c) return ctx_tighten_lb64(ctx, var_id, c + 1);
+            if (hi == c) return ctx_tighten_ub64(ctx, var_id, c - 1);
+        }
+        return PROP_OK;
+    case BIN_LT:   return ctx_tighten_ub64(ctx, var_id, c - 1);
+    case BIN_LTE:  return ctx_tighten_ub64(ctx, var_id, c);
+    case BIN_GT:   return ctx_tighten_lb64(ctx, var_id, c + 1);
+    case BIN_GTE:  return ctx_tighten_lb64(ctx, var_id, c);
+    default:       return PROP_OK;
+    }
+}
+
+static PropResult _fire_disj_clause(Propagator *self, SolveCtx *ctx) {
+    DisjClause_t *dc = (DisjClause_t *)self;
+    uint32_t n = dc->n_clauses;
+
+    /* Count how many clauses are definitely false */
+    uint32_t n_false = 0;
+    uint32_t survivor = 0;  /* index of the last non-false clause */
+    for (uint32_t i = 0; i < n; i++) {
+        Variable *v = &ctx->vars[dc->clauses[i].var_id];
+        if (_clause_definitely_false(v, ctx, dc->clauses[i].op,
+                                     dc->clauses[i].constant)) {
+            n_false++;
+        } else {
+            survivor = i;
+        }
+    }
+
+    if (n_false == n) return PROP_CONFLICT;  /* all false */
+    if (n_false < n - 1) return PROP_OK;     /* 2+ undecided */
+
+    /* Exactly one survivor — enforce it */
+    return _enforce_clause(ctx, dc->clauses[survivor].var_id,
+                           dc->clauses[survivor].op,
+                           dc->clauses[survivor].constant);
+}
+
+uint32_t prop_add_disj_clause(SolveCtx *ctx,
+                               uint32_t n_clauses,
+                               const uint32_t *var_ids,
+                               const uint32_t *ops,
+                               const int64_t *constants,
+                               uint8_t priority) {
+    if (n_clauses == 0 || n_clauses > MAX_DISJ_CLAUSES) return EXPR_NULL;
+
+    uint32_t ref = _alloc_prop(ctx, _fire_disj_clause, priority,
+                                n_clauses, var_ids, sizeof(DisjClause_t));
+    if (ref == EXPR_NULL) return EXPR_NULL;
+
+    DisjClause_t *dc = (DisjClause_t *)zsp_pool_ptr(&ctx->pool, ref);
+    dc->n_clauses = n_clauses;
+    for (uint32_t i = 0; i < n_clauses; i++) {
+        dc->clauses[i].var_id   = var_ids[i];
+        dc->clauses[i].op       = ops[i];
+        dc->clauses[i].constant = constants[i];
+    }
     return ref;
 }

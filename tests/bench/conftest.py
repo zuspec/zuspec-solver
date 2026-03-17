@@ -17,11 +17,29 @@ _PKG_DIR = Path(__file__).parent.parent.parent  # packages/zuspec-solver
 from solvers import solvers  # noqa: F401  (re-exported for test files)
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--bench-target-secs", type=float, default=None,
+        help="Target wall-clock seconds per benchmark (default: 5.0)",
+    )
+    parser.addoption(
+        "--bench-timeout-secs", type=float, default=None,
+        help="Hard timeout seconds per benchmark (default: 10.0)",
+    )
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
         "bench: throughput benchmark (use -m bench to select)",
     )
+    # Push CLI overrides into env vars so solvers pick them up via get_bench_config().
+    target = config.getoption("--bench-target-secs", default=None)
+    timeout = config.getoption("--bench-timeout-secs", default=None)
+    if target is not None:
+        os.environ["ZSP_BENCH_TARGET"] = str(target)
+    if timeout is not None:
+        os.environ["ZSP_BENCH_TIMEOUT"] = str(timeout)
 
 
 def _build_native_lib(build_dir: Path) -> Path:

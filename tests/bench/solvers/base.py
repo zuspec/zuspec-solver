@@ -2,12 +2,43 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol
 
 # Canonical results directory — one JSON file per (scenario, solver) pair.
 RESULTS_DIR = Path(__file__).parent.parent / "results"
+
+
+# ---------------------------------------------------------------------------
+# Adaptive benchmark configuration
+# ---------------------------------------------------------------------------
+
+@dataclass
+class BenchConfig:
+    """Controls how long benchmarks run.
+
+    Solvers run until *target_secs* of wall-clock time has elapsed **and**
+    at least *min_solutions* have been produced.  If *timeout_secs* is
+    exceeded first, the solver reports whatever it has (or skips).
+
+    Defaults can be overridden via ``--bench-target-secs`` /
+    ``--bench-timeout-secs`` pytest CLI options or the ``ZSP_BENCH_TARGET``
+    / ``ZSP_BENCH_TIMEOUT`` environment variables.
+    """
+    target_secs:  float = 5.0
+    timeout_secs: float = 10.0
+    min_solutions: int  = 10
+
+
+def get_bench_config() -> BenchConfig:
+    """Return the active benchmark config, respecting env-var overrides."""
+    return BenchConfig(
+        target_secs=float(os.environ.get("ZSP_BENCH_TARGET", "5.0")),
+        timeout_secs=float(os.environ.get("ZSP_BENCH_TIMEOUT", "10.0")),
+        min_solutions=int(os.environ.get("ZSP_BENCH_MIN_SOL", "10")),
+    )
 
 
 @dataclass

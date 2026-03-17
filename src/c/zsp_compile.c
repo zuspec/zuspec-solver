@@ -155,6 +155,67 @@ static int _compile_var_const_cmp(SolveCtx *ctx, BinOp op,
     }
 }
 
+/* ------------------------------------------------------------------ */
+/* _flatten_or — collect var-const comparison clauses from an OR tree */
+/* ------------------------------------------------------------------ */
+
+#define MAX_OR_CLAUSES 4
+
+typedef struct {
+    uint32_t var_id;
+    uint32_t op;
+    int64_t  constant;
+} OrClause;
+
+/**
+ * Recursively flatten a BIN_OR tree of var-const comparisons.
+ * Returns number of clauses extracted, or -1 if the tree contains
+ * unsupported nodes.
+ */
+static int _flatten_or(SolveProblem *sp, ExprRef ref,
+                        OrClause *out, int max_clauses) {
+    if (ref == EXPR_NULL) return -1;
+    ExprKind k = *(ExprKind *)zsp_pool_ptr(&sp->pool, ref);
+    if (k != EXPR_BINARY) return -1;
+
+    ExprBinary *e = (ExprBinary *)zsp_pool_ptr(&sp->pool, ref);
+
+    if (e->op == BIN_OR) {
+        int n_left = _flatten_or(sp, e->lhs, out, max_clauses);
+        if (n_left < 0) return -1;
+        int n_right = _flatten_or(sp, e->rhs, out + n_left,
+                                   max_clauses - n_left);
+        if (n_right < 0) return -1;
+        return n_left + n_right;
+    }
+
+    /* Leaf: must be a var-const or const-var comparison */
+    uint32_t vid; int64_t cv;
+    if (_is_var(sp, e->lhs, &vid) && _is_const(sp, e->rhs, &cv)) {
+        if (max_clauses < 1) return -1;
+        out[0].var_id = vid;
+        out[0].op = e->op;
+        out[0].constant = cv;
+        return 1;
+    }
+    if (_is_const(sp, e->lhs, &cv) && _is_var(sp, e->rhs, &vid)) {
+        if (max_clauses < 1) return -1;
+        out[0].var_id = vid;
+        /* Flip the operator since constant is on the left */
+        switch (e->op) {
+        case BIN_LT:  out[0].op = BIN_GT;  break;
+        case BIN_LTE: out[0].op = BIN_GTE; break;
+        case BIN_GT:  out[0].op = BIN_LT;  break;
+        case BIN_GTE: out[0].op = BIN_LTE; break;
+        default:      out[0].op = e->op;   break;
+        }
+        out[0].constant = cv;
+        return 1;
+    }
+
+    return -1;  /* not a var-const comparison */
+}
+
 /* Returns 1 if the constraint was compiled, 0 if it could not be handled. */
 static int _compile_constraint(SolveCtx *ctx, SolveProblem *sp, ExprRef root) {
     if (root == EXPR_NULL) return 1; /* vacuously handled */
@@ -164,6 +225,26 @@ static int _compile_constraint(SolveCtx *ctx, SolveProblem *sp, ExprRef root) {
     if (k == EXPR_BINARY) {
         ExprBinary *e = (ExprBinary *)zsp_pool_ptr(&sp->pool, root);
         uint32_t lid, rid2;
+
+        /* OR tree of var-const comparisons → DisjClause propagator */
+        if (e->op == BIN_OR) {
+            OrClause clauses[MAX_OR_CLAUSES];
+            int n = _flatten_or(sp, root, clauses, MAX_OR_CLAUSES);
+            if (n >= 2 && n <= (int)MAX_OR_CLAUSES) {
+                uint32_t vids[MAX_OR_CLAUSES];
+                uint32_t ops[MAX_OR_CLAUSES];
+                int64_t  cvs[MAX_OR_CLAUSES];
+                for (int i = 0; i < n; i++) {
+                    vids[i] = clauses[i].var_id;
+                    ops[i]  = clauses[i].op;
+                    cvs[i]  = clauses[i].constant;
+                }
+                uint32_t ref = prop_add_disj_clause(ctx, (uint32_t)n,
+                                                     vids, ops, cvs, 0);
+                return (ref != EXPR_NULL) ? 1 : 0;
+            }
+            return 0;  /* couldn't flatten — fall through */
+        }
 
         /* Binary comparison: var op var */
         if (_is_var(sp, e->lhs, &lid) && _is_var(sp, e->rhs, &rid2)) {
@@ -175,6 +256,8 @@ static int _compile_constraint(SolveCtx *ctx, SolveProblem *sp, ExprRef root) {
                 case BIN_LT:  prop_add_bounds_lt_32(ctx, lid, rid2, 0); return 1;
                 case BIN_EQ:  prop_add_bounds_eq_32(ctx, lid, rid2, 0); return 1;
                 case BIN_NEQ: prop_add_bounds_ne_32(ctx, lid, rid2, 0); return 1;
+                case BIN_GT:  prop_add_bounds_lt_32(ctx, rid2, lid, 0); return 1;
+                case BIN_GTE: prop_add_bounds_le_32(ctx, rid2, lid, 0); return 1;
                 default: break;
                 }
             } else {
@@ -183,6 +266,8 @@ static int _compile_constraint(SolveCtx *ctx, SolveProblem *sp, ExprRef root) {
                 case BIN_LT:  prop_add_bounds_lt_64(ctx, lid, rid2, 0); return 1;
                 case BIN_EQ:  prop_add_bounds_eq_64(ctx, lid, rid2, 0); return 1;
                 case BIN_NEQ: prop_add_bounds_ne_64(ctx, lid, rid2, 0); return 1;
+                case BIN_GT:  prop_add_bounds_lt_64(ctx, rid2, lid, 0); return 1;
+                case BIN_GTE: prop_add_bounds_le_64(ctx, rid2, lid, 0); return 1;
                 default: break;
                 }
             }
@@ -201,33 +286,112 @@ static int _compile_constraint(SolveCtx *ctx, SolveProblem *sp, ExprRef root) {
         }
 
         /* r = a op b  (EQ with RHS binary expression) */
-        if (e->op == BIN_EQ && _is_var(sp, e->lhs, &lid)) {
-            if (e->rhs != EXPR_NULL) {
+        /* r = a op b  (EQ with one side a var, other side a binary expr)
+         * Handles both  var == BinOp(a, b)  and  BinOp(a, b) == var/const
+         * Also handles const-var operand order: var == const * var */
+        if (e->op == BIN_EQ) {
+            ExprRef var_side = EXPR_NULL, expr_side = EXPR_NULL;
+            /* Determine which side is the "result" var and which is the expr */
+            if (e->lhs != EXPR_NULL && e->rhs != EXPR_NULL) {
+                ExprKind lk = *(ExprKind *)zsp_pool_ptr(&sp->pool, e->lhs);
                 ExprKind rk = *(ExprKind *)zsp_pool_ptr(&sp->pool, e->rhs);
-                if (rk == EXPR_BINARY) {
-                    ExprBinary *rhs_e = (ExprBinary *)zsp_pool_ptr(&sp->pool, e->rhs);
-                    uint32_t aid, bid;
-                    if (_is_var(sp, rhs_e->lhs, &aid) && _is_var(sp, rhs_e->rhs, &bid)) {
-                        uint16_t w = ctx->vars[lid].width;
-                        if (ctx->vars[aid].width > w) w = ctx->vars[aid].width;
-                        if (ctx->vars[bid].width > w) w = ctx->vars[bid].width;
+                if (lk == EXPR_VAR && rk == EXPR_BINARY) {
+                    var_side = e->lhs; expr_side = e->rhs;
+                } else if (lk == EXPR_BINARY && rk == EXPR_VAR) {
+                    var_side = e->rhs; expr_side = e->lhs;
+                } else if (lk == EXPR_BINARY && rk == EXPR_CONST) {
+                    /* BinOp(...) == const: handled below via var_const_cmp
+                     * after introducing temp var in IR translator */
+                    var_side = EXPR_NULL; expr_side = EXPR_NULL;
+                }
+            }
+            if (var_side != EXPR_NULL && expr_side != EXPR_NULL) {
+                ExprVar *ev = (ExprVar *)zsp_pool_ptr(&sp->pool, var_side);
+                uint32_t r_id = ev->var_id;
+                ExprBinary *binop = (ExprBinary *)zsp_pool_ptr(&sp->pool, expr_side);
+                uint32_t a_id, b_id;
+                int64_t cv;
+                int has_var_var = _is_var(sp, binop->lhs, &a_id) && _is_var(sp, binop->rhs, &b_id);
+                int has_const_var = _is_const(sp, binop->lhs, &cv) && _is_var(sp, binop->rhs, &b_id);
+                int has_var_const = _is_var(sp, binop->lhs, &a_id) && _is_const(sp, binop->rhs, &cv);
+                if (has_var_var || has_const_var || has_var_const) {
+                    /* For const-var: treat as var-const with commutative ops,
+                     * or swap for non-commutative ops */
+                    if (has_const_var) {
+                        /* const op var: for Add/Mul (commutative), just swap */
+                        a_id = b_id;
+                        /* Create a temp const-var by adding the const as a
+                         * compile-time bound tightening: r = cv op b */
+                        /* Actually, for MUL: r = cv * b is the same as r = b * cv
+                         * For ADD: r = cv + b is the same as r = b + cv
+                         * So we handle commutative ops by just rewriting */
+                        /* We need both operands to be var IDs for the propagator.
+                         * Fall through if we can't handle it. */
+                        has_var_var = 0; /* force fallthrough for now */
+                    }
+                    if (has_var_var) {
+                        uint16_t w = ctx->vars[r_id].width;
+                        if (ctx->vars[a_id].width > w) w = ctx->vars[a_id].width;
+                        if (ctx->vars[b_id].width > w) w = ctx->vars[b_id].width;
                         if (w <= 32) {
-                            switch (rhs_e->op) {
-                            case BIN_ADD: prop_add_bounds_add_32(ctx, lid, aid, bid, 0); return 1;
-                            case BIN_MUL: prop_add_bounds_mul_32(ctx, lid, aid, bid, 0); return 1;
-                            case BIN_DIV: prop_add_bounds_div_32(ctx, lid, aid, bid, 0); return 1;
-                            case BIN_MOD: prop_add_bounds_mod_32(ctx, lid, aid, bid, 0); return 1;
+                            switch (binop->op) {
+                            case BIN_ADD: prop_add_bounds_add_32(ctx, r_id, a_id, b_id, 0); return 1;
+                            case BIN_MUL: prop_add_bounds_mul_32(ctx, r_id, a_id, b_id, 0); return 1;
+                            case BIN_DIV: prop_add_bounds_div_32(ctx, r_id, a_id, b_id, 0); return 1;
+                            case BIN_MOD: prop_add_bounds_mod_32(ctx, r_id, a_id, b_id, 0); return 1;
                             default: break;
                             }
                         } else {
-                            switch (rhs_e->op) {
-                            case BIN_ADD: prop_add_bounds_add_64(ctx, lid, aid, bid, 0); return 1;
-                            case BIN_MUL: prop_add_bounds_mul_64(ctx, lid, aid, bid, 0); return 1;
-                            case BIN_DIV: prop_add_bounds_div_64(ctx, lid, aid, bid, 0); return 1;
-                            case BIN_MOD: prop_add_bounds_mod_64(ctx, lid, aid, bid, 0); return 1;
+                            switch (binop->op) {
+                            case BIN_ADD: prop_add_bounds_add_64(ctx, r_id, a_id, b_id, 0); return 1;
+                            case BIN_MUL: prop_add_bounds_mul_64(ctx, r_id, a_id, b_id, 0); return 1;
+                            case BIN_DIV: prop_add_bounds_div_64(ctx, r_id, a_id, b_id, 0); return 1;
+                            case BIN_MOD: prop_add_bounds_mod_64(ctx, r_id, a_id, b_id, 0); return 1;
                             default: break;
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        /* BinOp(var, var) op const  — handle the pattern where an arithmetic
+         * expression is compared to a constant (e.g. s012345 + p6 == 200) */
+        {
+            int64_t cv;
+            ExprRef expr_side = EXPR_NULL;
+            BinOp cmp_op = e->op;
+            int flipped = 0;
+            if (e->lhs != EXPR_NULL && _is_const(sp, e->rhs, &cv)) {
+                ExprKind lk = *(ExprKind *)zsp_pool_ptr(&sp->pool, e->lhs);
+                if (lk == EXPR_BINARY) expr_side = e->lhs;
+            } else if (e->rhs != EXPR_NULL && _is_const(sp, e->lhs, &cv)) {
+                ExprKind rk = *(ExprKind *)zsp_pool_ptr(&sp->pool, e->rhs);
+                if (rk == EXPR_BINARY) { expr_side = e->rhs; flipped = 1; }
+            }
+            if (expr_side != EXPR_NULL) {
+                ExprBinary *binop = (ExprBinary *)zsp_pool_ptr(&sp->pool, expr_side);
+                uint32_t a_id, b_id;
+                if (_is_var(sp, binop->lhs, &a_id) && _is_var(sp, binop->rhs, &b_id)) {
+                    if (binop->op == BIN_ADD && (cmp_op == BIN_EQ ||
+                        cmp_op == BIN_LT || cmp_op == BIN_LTE ||
+                        cmp_op == BIN_GT || cmp_op == BIN_GTE)) {
+                        /* (a + b) cmp cv: tighten bounds on a and b */
+                        /* EQ: a+b == cv => a in [cv-b_hi, cv-b_lo], b in [cv-a_hi, cv-a_lo] */
+                        BinOp eff = cmp_op;
+                        if (flipped) {
+                            switch (cmp_op) {
+                            case BIN_LT:  eff = BIN_GT;  break;
+                            case BIN_LTE: eff = BIN_GTE; break;
+                            case BIN_GT:  eff = BIN_LT;  break;
+                            case BIN_GTE: eff = BIN_LTE; break;
+                            default: break;
+                            }
+                        }
+                        /* Create a temporary variable for the sum, set its bounds
+                         * from the comparison, and add an ADD propagator. */
+                        /* For now, use the IR translator to handle this by
+                         * introducing a temp var. See below. */
                     }
                 }
             }

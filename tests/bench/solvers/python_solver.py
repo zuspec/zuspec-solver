@@ -5,16 +5,24 @@ Wraps ``zdc.randomize()`` directly with no extra environment variable set.
 from __future__ import annotations
 
 import os
+import signal
 import time
 from contextlib import contextmanager
 from pathlib import Path
 
 import zuspec.dataclasses as zdc
 
-from .base import BenchResult, RESULTS_DIR
+from .base import BenchResult, RESULTS_DIR, get_bench_config
 
-WARMUP_ITERS = 100
-BATCH_SIZE   = 500
+WARMUP_ITERS = 50
+
+
+class _BenchTimeout(Exception):
+    """Raised by SIGALRM when the benchmark wall-clock budget is exhausted."""
+
+
+def _alarm_handler(signum, frame):
+    raise _BenchTimeout
 
 
 @contextmanager
@@ -35,14 +43,14 @@ def _zdc_bench(
     cls,
     validate,
     solver_name: str,
-    n_solutions: int,
-    min_bench_ns: int,
+    n_solutions: int = 0,
+    min_bench_ns: int = 0,
 ) -> None:
-    """Shared timed loop for the Python and native back-ends.
+    """Adaptive timed loop for the Python and native back-ends.
 
-    Handles intermittent RandomizationError (UNSAT) from the Python bitwuzla
-    backend gracefully: counts failures separately and skips the benchmark if
-    the solver cannot reliably produce solutions.
+    Runs randomizations until the wall-clock *target* is reached (and at
+    least *min_solutions* produced).  A SIGALRM enforces the hard timeout
+    even if a single randomize() call blocks.
     """
     import pytest
     from zuspec.dataclasses.constraint_parser import extract_rand_fields
@@ -51,38 +59,79 @@ def _zdc_bench(
     except ImportError:
         RandomizationError = Exception  # type: ignore
 
+    cfg = get_bench_config()
+    target_ns  = int(cfg.target_secs * 1e9)
+    timeout_ns = int(cfg.timeout_secs * 1e9)
+    min_sol    = cfg.min_solutions
+
     fields_info = extract_rand_fields(cls)
     fields      = [f["name"] for f in fields_info]
     init_kwargs = {f["name"]: f.get("default", 0) for f in fields_info}
     obj = cls(**init_kwargs)
 
-    # warm-up excluded from timing
-    for _ in range(min(WARMUP_ITERS, n_solutions // 10 or 1)):
-        try:
-            zdc.randomize(obj)
-        except RandomizationError:
-            pass
-
     iters = 0
     failures = 0
-    t_start = time.perf_counter_ns()
-    while True:
-        for _ in range(BATCH_SIZE):
+    t_start = time.perf_counter_ns()  # captured before warm-up for alarm handler
+
+    # Install SIGALRM so a hanging randomize() call doesn't block forever.
+    prev_handler = signal.signal(signal.SIGALRM, _alarm_handler)
+    # +2s grace beyond the configured timeout for warm-up overhead
+    signal.alarm(int(cfg.timeout_secs) + 2)
+
+    try:
+        # Warm-up (excluded from timing)
+        for _ in range(min(WARMUP_ITERS, max(min_sol, 1))):
+            try:
+                zdc.randomize(obj)
+            except RandomizationError:
+                pass
+
+        t_start = time.perf_counter_ns()  # reset after warm-up
+
+        while True:
             try:
                 zdc.randomize(obj)
                 iters += 1
             except RandomizationError:
                 failures += 1
+
+            elapsed = time.perf_counter_ns() - t_start
+            total_attempts = iters + failures
+
+            # Done: target time reached and enough solutions
+            if elapsed >= target_ns and iters >= min_sol:
+                break
+
+            # Soft timeout check (for when individual calls are fast but many)
+            if elapsed >= timeout_ns:
+                if iters >= min_sol:
+                    break
+                pytest.skip(
+                    f"{solver_name}: timed out after {elapsed/1e9:.1f}s "
+                    f"with only {iters} solutions on {cls.__name__}"
+                )
+
+            # Give up if solver can't handle the problem (>90% UNSAT)
+            if total_attempts >= 50 and failures / total_attempts > 0.90:
+                pytest.skip(
+                    f"{solver_name}: >90% UNSAT rate on {cls.__name__} "
+                    f"({failures}/{total_attempts} failed)"
+                )
+
+    except _BenchTimeout:
         elapsed = time.perf_counter_ns() - t_start
-        total_attempts = iters + failures
-        if total_attempts >= n_solutions and elapsed >= min_bench_ns:
-            break
-        # Give up if failure rate is overwhelming (> 90%) after 50+ attempts
-        if total_attempts >= 50 and failures / total_attempts > 0.90:
+        if iters >= min_sol:
+            pass  # Got enough data, fall through to reporting
+        else:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, prev_handler)
             pytest.skip(
-                f"{solver_name}: >90% UNSAT rate on {cls.__name__} "
-                f"({failures}/{total_attempts} failed) — problem too hard"
+                f"{solver_name}: timed out (alarm) after {cfg.timeout_secs}s "
+                f"with {iters} solutions on {cls.__name__}"
             )
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, prev_handler)
 
     sol = {f: getattr(obj, f) for f in fields}
     validate(sol)

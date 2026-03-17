@@ -1,8 +1,0 @@
-{
-  "solver": "python",
-  "scenario": "socmemmap",
-  "n_solutions": 1000,
-  "bench_ns": 2406341962,
-  "ns_per_solution": 2406341.962,
-  "solutions_per_s": 415.56853339700024
-}

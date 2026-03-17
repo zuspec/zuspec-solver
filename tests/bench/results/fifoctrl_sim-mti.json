@@ -1,8 +1,0 @@
-{
-  "solver": "sim-mti",
-  "scenario": "fifoctrl",
-  "n_solutions": 1000,
-  "bench_ns": 104358602,
-  "ns_per_solution": 104358.602,
-  "solutions_per_s": 9582.343772677215
-}

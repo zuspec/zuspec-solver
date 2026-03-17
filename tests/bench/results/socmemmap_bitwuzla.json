@@ -1,8 +1,0 @@
-{
-  "solver": "bitwuzla",
-  "scenario": "socmemmap",
-  "n_solutions": 1000,
-  "bench_ns": 2658289098,
-  "ns_per_solution": 2658289.098,
-  "solutions_per_s": 376.1818083489729
-}

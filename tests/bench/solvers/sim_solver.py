@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 import zuspec.dataclasses as zdc
 
-from .base import BenchResult, RESULTS_DIR
+from .base import BenchResult, RESULTS_DIR, get_bench_config
 
 # sv_bench_time.c lives alongside the old SV corpus — a single canonical copy.
 _C_DIR = Path(__file__).parent.parent / "sim" / "data"
@@ -22,10 +22,17 @@ _C_DIR = Path(__file__).parent.parent / "sim" / "data"
 _SIM_EXECUTABLES: dict[str, str] = {
     "verilator": "vlt",
     "vsim":      "mti",
+    "vcs":       "vcs",
+    "xmsim":     "xcm",
 }
 
+# Default n_solutions for the SV loop (large enough that the timeout
+# controls the actual duration for fast solvers).
+_DEFAULT_SIM_N = 100_000
 
-def _dv_flow_run(tmp_path: Path, sim_id: str, sv_file: Path, n_solutions: int):
+
+def _dv_flow_run(tmp_path: Path, sim_id: str, sv_file: Path,
+                 n_solutions: int, timeout_ns: int):
     """Compile *sv_file* with *sim_id* and run; return ``(bench_ns, solutions)``."""
     try:
         from dv_flow.mgr import (
@@ -64,11 +71,18 @@ def _dv_flow_run(tmp_path: Path, sim_id: str, sv_file: Path, n_solutions: int):
         needs=[sv_files, c_files],
         top=["harness"],
     )
+
+    plusargs = [
+        "n_solutions=%d" % n_solutions,
+    ]
+    if timeout_ns > 0:
+        plusargs.append("timeout_ns=%d" % timeout_ns)
+
     sim_run = builder.mkTaskNode(
         "hdlsim.%s.SimRun" % sim_id,
         name="sim_run",
         needs=[sim_img],
-        plusargs=["n_solutions=%d" % n_solutions],
+        plusargs=plusargs,
     )
 
     runner.add_listener(TaskListenerLog().event)
@@ -96,8 +110,12 @@ def _dv_flow_run(tmp_path: Path, sim_id: str, sv_file: Path, n_solutions: int):
 
     raw_solutions = []
     for line in content.splitlines():
-        # MTI prefixes output with "# "; strip it for uniform parsing
-        stripped = line.lstrip("# ")
+        # Simulators prefix $display output differently:
+        #   MTI:     "# "
+        #   VCS:     no prefix (or occasional timestamp)
+        #   Xcelium: "xmsim: *W,RNQUIE: ..." warnings, but $display is clean
+        # Strip common prefixes so SOL/BENCH_NS parsing is uniform.
+        stripped = re.sub(r"^#\s*", "", line)
         if stripped.startswith("SOL "):
             raw_solutions.append(list(map(int, stripped.split()[1:])))
     return bench_ns, raw_solutions
@@ -127,20 +145,31 @@ class SimSolver:
         except ImportError:
             pytest.skip("zuspec.solver.bench_harness not available")
 
+        cfg = get_bench_config()
+        timeout_ns = int(cfg.timeout_secs * 1e9)
+
         try:
-            sv_text = SolvePerfHarnessGenerator().emit(cls, n_solutions=n_solutions)
+            sv_text = SolvePerfHarnessGenerator().emit(
+                cls, n_solutions=_DEFAULT_SIM_N)
         except (ImportError, ModuleNotFoundError) as exc:
             pytest.skip(f"SV harness generator dependency missing: {exc}")
         sv_file = tmp_path / "harness.sv"
         sv_file.write_text(sv_text)
 
-        bench_ns, raw_solutions = _dv_flow_run(tmp_path, self._sim_id, sv_file, n_solutions)
+        bench_ns, raw_solutions = _dv_flow_run(
+            tmp_path, self._sim_id, sv_file, _DEFAULT_SIM_N, timeout_ns)
 
         # Map raw integer lists to dicts using field-declaration order.
         field_names = [f["name"] for f in zdc.extract_rand_fields(cls)]
         solutions = [
             dict(zip(field_names, vals)) for vals in raw_solutions
         ]
+
+        if len(solutions) < cfg.min_solutions:
+            pytest.skip(
+                f"{self}: only {len(solutions)} solutions in "
+                f"{bench_ns/1e9:.1f}s on {cls.__name__}"
+            )
 
         # Spot-check the last few solutions.
         for sol in solutions[-5:]:

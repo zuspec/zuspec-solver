@@ -1,8 +1,0 @@
-{
-  "solver": "python",
-  "scenario": "packethdr",
-  "n_solutions": 3000,
-  "bench_ns": 1065542023,
-  "ns_per_solution": 355180.6743333333,
-  "solutions_per_s": 2815.468498889978
-}

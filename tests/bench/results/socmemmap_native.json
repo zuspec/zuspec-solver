@@ -1,8 +1,0 @@
-{
-  "solver": "native",
-  "scenario": "socmemmap",
-  "n_solutions": 55500,
-  "bench_ns": 1004761630,
-  "ns_per_solution": 18103.813153153154,
-  "solutions_per_s": 55236.98192973392
-}

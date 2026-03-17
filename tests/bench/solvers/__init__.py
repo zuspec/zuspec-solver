@@ -16,6 +16,7 @@ from .python_solver   import PythonSolver
 from .native_solver   import NativeSolver
 from .sim_solver      import SimSolver, _SIM_EXECUTABLES
 from .bitwuzla_solver import BitwuzlaSolver
+from .c_exe_solver    import CExeSolver
 
 
 def solvers():
@@ -28,6 +29,7 @@ def solvers():
         PythonSolver(),
         NativeSolver(),
         BitwuzlaSolver(),
+        CExeSolver(),
         *[SimSolver(sim_id, exe) for exe, sim_id in _SIM_EXECUTABLES.items()],
     ]
 

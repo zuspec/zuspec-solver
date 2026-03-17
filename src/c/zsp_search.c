@@ -5,6 +5,7 @@
 #include "zsp_ctx.h"
 #include "zsp_propagator.h"
 #include "zsp_trail.h"
+#include "zsp_shave.h"
 
 /* ------------------------------------------------------------------ */
 /* Luby sequence                                                       */
@@ -105,8 +106,12 @@ SolveResult solver_solve(SolveCtx *ctx, const SolveOpts *opts) {
         }
     }
 
-    uint32_t max_conflicts  = opts ? opts->max_conflicts : 0;
-    uint32_t max_restarts   = opts ? opts->max_restarts  : 0;
+    /* Default restart parameters: 100 conflicts per restart,
+     * 10000 max restarts.  Caller can override via opts. */
+    uint32_t max_conflicts  = (opts && opts->max_conflicts > 0)
+                              ? opts->max_conflicts : 100;
+    uint32_t max_restarts   = (opts && opts->max_restarts > 0)
+                              ? opts->max_restarts  : 10000;
     uint32_t restart_count  = 0;
     uint32_t local_conflicts = 0;
     uint32_t luby_idx       = 1;  /* 1-indexed Luby sequence */
@@ -117,24 +122,40 @@ SolveResult solver_solve(SolveCtx *ctx, const SolveOpts *opts) {
     /* Level-0 BCP */
     if (solver_propagate(ctx) == PROP_CONFLICT) return SOLVE_UNSAT;
 
+    /* Check for domains that became empty before search (e.g. from
+     * conflicting bounds imposed externally before solver_solve). */
+    for (uint32_t i = 0; i < ctx->n_vars; i++) {
+        if (var_lo64(ctx, &ctx->vars[i]) > var_hi64(ctx, &ctx->vars[i]))
+            return SOLVE_UNSAT;
+    }
+
+    /* Pre-search bounds shaving (L2): tighten domains beyond what
+     * individual propagator fixed-point can achieve. */
+    uint32_t max_si = opts ? opts->max_shave_iters : 1000;
+    if (max_si > 0) {
+        PropResult sr = bounds_shave(ctx, max_si);
+        if (sr == PROP_CONFLICT) return SOLVE_UNSAT;
+    }
+
     for (;;) {
         /* ── Variable selection ── */
         uint32_t x_id = _select_unassigned(ctx);
         if (x_id == EXPR_NULL) return SOLVE_OK;   /* all assigned */
-
-        /* ── Value selection ── */
         int64_t v = _pick_value(ctx, x_id, opts);
 
         /* ── Record decision ── */
         uint32_t dec_idx = ctx->decision_level;   /* index before push */
         ctx->decisions[dec_idx].var_id      = x_id;
         ctx->decisions[dec_idx].tried_value = v;
+        ctx->decisions[dec_idx].tried_lower = 0;
 
         /* ── Push level and assign ── */
         trail_push_level(ctx);
         PropResult pr = ctx_tighten_lb64(ctx, x_id, v);
         if (pr == PROP_OK) pr = ctx_tighten_ub64(ctx, x_id, v);
-        if (pr == PROP_OK) pr = solver_propagate(ctx);
+        if (pr == PROP_OK) {
+            pr = solver_propagate(ctx);
+        }
 
         /* ── Conflict loop ── */
         while (pr == PROP_CONFLICT) {
@@ -159,8 +180,26 @@ SolveResult solver_solve(SolveCtx *ctx, const SolveOpts *opts) {
                 break;  /* restart outer for-loop */
             }
 
-            /* No further backtrack possible → UNSAT */
-            if (cur == 0) return SOLVE_UNSAT;
+            /* No further backtrack possible at this level.  Restart
+             * with a different RNG state rather than giving up —
+             * the problem may be satisfiable via a different search
+             * path.  True UNSAT is concluded only if the level-0
+             * propagation itself conflicts (domains genuinely empty)
+             * or the restart budget is exhausted (SOLVE_TIMEOUT). */
+            if (cur == 0) {
+                trail_backtrack(ctx, 0);
+                local_conflicts = 0;
+                restart_count++;
+                luby_idx++;
+                luby_limit = _luby(luby_idx) * max_conflicts;
+
+                if (max_restarts > 0 && restart_count >= max_restarts)
+                    return SOLVE_TIMEOUT;
+
+                pr = solver_propagate(ctx);
+                if (pr == PROP_CONFLICT) return SOLVE_UNSAT;
+                break;  /* restart outer for-loop */
+            }
 
             /* Retrieve the decision that created this level */
             DecisionRecord *d   = &ctx->decisions[cur - 1];
@@ -181,16 +220,26 @@ SolveResult solver_solve(SolveCtx *ctx, const SolveOpts *opts) {
             } else if (val >= dhi) {
                 pr = ctx_tighten_ub64(ctx, dv, dhi - 1);
             } else {
-                /* Middle value: exclude by tightening lb past it. */
-                pr = ctx_tighten_lb64(ctx, dv, val + 1);
+                /* Middle value: two-phase domain bisection.
+                 * Split at the midpoint of [dlo, dhi] (not at val)
+                 * for systematic, logarithmic-depth exploration.
+                 * Phase 1: explore lower half [dlo, mid].
+                 * Phase 2: explore upper half [mid+1, dhi]. */
+                int64_t mid = dlo + (dhi - dlo) / 2;
+                if (!d->tried_lower) {
+                    d->tried_lower = 1;
+                    pr = ctx_tighten_ub64(ctx, dv, mid);
+                } else {
+                    d->tried_lower = 0;
+                    pr = ctx_tighten_lb64(ctx, dv, mid + 1);
+                }
             }
 
             if (pr == PROP_OK) {
-                /* Save phase if enabled */
-                if (opts && opts->use_phase_save && ctx->phase_save)
-                    ctx->phase_save[dv] = (int32_t)val;
-
                 pr = solver_propagate(ctx);
+                /* Save phase if enabled */
+                if (pr == PROP_OK && opts && opts->use_phase_save && ctx->phase_save)
+                    ctx->phase_save[dv] = (int32_t)val;
             }
             /* If pr == PROP_CONFLICT, loop continues → backtracks further */
         }

@@ -1,8 +1,0 @@
-{
-  "solver": "sim-vlt",
-  "scenario": "fifoctrl",
-  "n_solutions": 1000,
-  "bench_ns": 17804397062,
-  "ns_per_solution": 17804397.062,
-  "solutions_per_s": 56.1659008456009
-}

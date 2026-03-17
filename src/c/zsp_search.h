@@ -28,6 +28,8 @@ typedef enum {
 typedef struct {
     uint32_t var_id;        /* variable assigned at this decision      */
     int64_t  tried_value;   /* value tried (used on backtrack)         */
+    uint8_t  tried_lower;   /* 1 = already tried values below tried_value */
+    uint8_t  _dec_pad[7];
 } DecisionRecord;
 
 /* ------------------------------------------------------------------ */
@@ -41,6 +43,7 @@ typedef struct {
     uint32_t max_restarts;      /* max total restarts (0=unlimited)       */
     uint8_t  use_phase_save;    /* 1 = remember last assigned value       */
     uint8_t  _pad[3];
+    uint32_t max_shave_iters;   /* pre-search bounds shaving budget (0=use default 1000) */
 } SolveOpts;
 
 /* ------------------------------------------------------------------ */

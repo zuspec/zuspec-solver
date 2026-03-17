@@ -262,4 +262,36 @@ uint32_t prop_add_bit_slice_64(SolveCtx *ctx, uint32_t r_id, uint32_t a_id,
 }
 #endif
 
+
+/* ------------------------------------------------------------------ */
+/* DisjClause: (v0 op0 c0) OR (v1 op1 c1) OR ... (up to 4 clauses)  */
+/*                                                                     */
+/* Each clause is var_id op constant.  When all but one clause are    */
+/* falsified by the current bounds, the surviving clause is enforced. */
+/* Uses uint32_t for op to avoid including zsp_problem.h.             */
+/* ------------------------------------------------------------------ */
+#define MAX_DISJ_CLAUSES 4u
+
+typedef struct {
+    Propagator    hdr;
+    PropWatchSect ws;
+    uint32_t      n_clauses;
+    struct {
+        uint32_t var_id;
+        uint32_t op;       /* BIN_EQ / BIN_NEQ / BIN_LT / BIN_LTE / BIN_GT / BIN_GTE */
+        int64_t  constant;
+    } clauses[MAX_DISJ_CLAUSES];
+} DisjClause_t;
+
+uint32_t prop_add_disj_clause(SolveCtx *ctx,
+                               uint32_t n_clauses,
+                               const uint32_t *var_ids,
+                               const uint32_t *ops,
+                               const int64_t *constants,
+                               uint8_t priority);
+
+#ifdef __cplusplus
+}
+#endif
+
 #endif /* ZSP_PROPAGATOR_H */

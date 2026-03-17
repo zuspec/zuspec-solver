@@ -1,8 +1,0 @@
-{
-  "solver": "native",
-  "scenario": "memtransaction",
-  "n_solutions": 82500,
-  "bench_ns": 1005574042,
-  "ns_per_solution": 12188.776266666666,
-  "solutions_per_s": 82042.69059682032
-}

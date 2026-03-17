@@ -1,8 +1,0 @@
-{
-  "solver": "python",
-  "scenario": "fifoctrl",
-  "n_solutions": 6500,
-  "bench_ns": 1074961875,
-  "ns_per_solution": 165378.75,
-  "solutions_per_s": 6046.726075750361
-}

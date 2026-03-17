@@ -25,6 +25,8 @@ from zuspec.dataclasses.solver.core.constraints import (
     ImplicationConstraint,
     UniqueConstraint,
 )
+from zuspec.dataclasses.solver.core.variable import Variable, VarKind
+from zuspec.dataclasses.solver.core.domain import IntDomain
 
 if TYPE_CHECKING:
     from zuspec.dataclasses.solver.core.constraint_system import ConstraintSystem
@@ -112,6 +114,8 @@ class IRTranslator:
                 translated to the native C representation.
         """
         sp = SolveProblem(buf_size=buf_size)
+        self._system = system
+        self._next_tmp = 0
         # Assign deterministic IDs (sorted by name)
         sorted_names = sorted(system.variables.keys())
         var_id_map: Dict[str, int] = {name: idx for idx, name in enumerate(sorted_names)}
@@ -187,6 +191,46 @@ class IRTranslator:
                     raise TranslationError(f"Unsupported CmpOp in chain: {op}")
                 sp.add_constraint(sp.expr_binary(cbin, lhs_ref, rhs_ref))
             return
+
+        # Pre-process BoolOp(Or): lift BinOp leaves inside comparisons
+        # so the C compiler's _flatten_or sees var-const comparisons.
+        if isinstance(constraint, BoolOpConstraint) and constraint.op == BoolOp.Or:
+            rewritten_values = []
+            changed = False
+            for val in constraint.values:
+                if isinstance(val, CompareConstraint) and isinstance(val.left, BinaryOpConstraint):
+                    self._introduce_temp_for_binop(sp, var_id_map, val.left)
+                    tmp_name = f"__ir_tmp_{self._next_tmp - 1}"
+                    rewritten_values.append(CompareConstraint(
+                        left=VariableRefConstraint(
+                            variable=Variable(tmp_name, IntDomain([], 64, True))),
+                        op=val.op,
+                        right=val.right))
+                    changed = True
+                else:
+                    rewritten_values.append(val)
+            if changed:
+                constraint = BoolOpConstraint(op=constraint.op, values=rewritten_values)
+
+        # Rewrite patterns the C compiler can't handle:
+        # 1. var == BinOp(const, op, var) → replace const with const-variable
+        # 2. Compare(BinOp(...), op, X) → introduce temp var for the BinOp result
+        if isinstance(constraint, CompareConstraint):
+            # Lift const operands inside RHS BinOps: var == const * var → var == cvar * var
+            if constraint.op == CmpOp.Eq and isinstance(constraint.right, BinaryOpConstraint):
+                rhs = self._lift_const_operands(sp, var_id_map, constraint.right)
+                constraint = CompareConstraint(left=constraint.left, op=constraint.op, right=rhs)
+
+            # Lift BinOp on the left side: BinOp(a,b) op X → tmp op X, tmp == BinOp(a,b)
+            if isinstance(constraint.left, BinaryOpConstraint):
+                tmp_ref = self._introduce_temp_for_binop(sp, var_id_map, constraint.left)
+                # Now emit: tmp_var op right
+                rhs_ref = self._translate_expr(sp, var_id_map, constraint.right)
+                cbin = _CMPOP_MAP.get(constraint.op)
+                if cbin is None:
+                    raise TranslationError(f"Unsupported CmpOp: {constraint.op}")
+                sp.add_constraint(sp.expr_binary(cbin, tmp_ref, rhs_ref))
+                return
 
         ref = self._translate_expr(sp, var_id_map, constraint)
         if ref == EXPR_NULL:
@@ -305,3 +349,74 @@ class IRTranslator:
         raise TranslationError(
             f"Unsupported constraint type: {type(constraint).__name__}"
         )
+
+    def _lift_const_operands(self, sp, var_id_map, binop):
+        """Replace ConstantConstraint operands in a BinaryOpConstraint with
+        const-variables (domain=[c,c]) so the C compiler sees var op var."""
+        """Replace ConstantConstraint operands in a BinaryOpConstraint with
+        const-variables (domain=[c,c]) so the C compiler sees var op var."""
+        left = binop.left
+        right = binop.right
+        changed = False
+
+        if isinstance(left, ConstantConstraint):
+            cv = left.value
+            tmp_name = f"__const_{cv}_{self._next_tmp}"
+            self._next_tmp += 1
+            tmp_vid = len(var_id_map)
+            var_id_map[tmp_name] = tmp_vid
+            sp.add_var(tmp_vid, width=32, is_signed=0, lo=cv, hi=cv)
+            left = VariableRefConstraint(
+                variable=Variable(tmp_name, IntDomain([(cv, cv)], 32, False)))
+            changed = True
+
+        if isinstance(right, ConstantConstraint):
+            cv = right.value
+            tmp_name = f"__const_{cv}_{self._next_tmp}"
+            self._next_tmp += 1
+            tmp_vid = len(var_id_map)
+            var_id_map[tmp_name] = tmp_vid
+            sp.add_var(tmp_vid, width=32, is_signed=0, lo=cv, hi=cv)
+            right = VariableRefConstraint(
+                variable=Variable(tmp_name, IntDomain([(cv, cv)], 32, False)))
+            changed = True
+
+        if changed:
+            return type(binop)(left=left, op=binop.op, right=right)
+        return binop
+    def _introduce_temp_for_binop(self, sp, var_id_map, binop):
+        """Recursively decompose a BinOp tree into tmp == var op var chains.
+
+        Returns the ExprRef of the final temp variable.
+        For a simple BinOp(var_a, ADD, var_b), emits one constraint:
+            tmp == var_a + var_b
+        For a nested chain ((a+b)+c), emits:
+            tmp1 == a + b
+            tmp2 == tmp1 + c
+        and returns the ExprRef for tmp2.
+        """
+        # Recursively resolve operands
+        left_ref = (self._introduce_temp_for_binop(sp, var_id_map, binop.left)
+                    if isinstance(binop.left, BinaryOpConstraint)
+                    else self._translate_expr(sp, var_id_map, binop.left))
+        right_ref = (self._introduce_temp_for_binop(sp, var_id_map, binop.right)
+                     if isinstance(binop.right, BinaryOpConstraint)
+                     else self._translate_expr(sp, var_id_map, binop.right))
+
+        # Create temp variable with wide domain
+        tmp_name = f"__ir_tmp_{self._next_tmp}"
+        self._next_tmp += 1
+        tmp_vid = len(var_id_map)
+        var_id_map[tmp_name] = tmp_vid
+        # Use signed 64-bit domain to avoid overflow issues
+        sp.add_var(tmp_vid, width=64, is_signed=1, lo=-(1 << 62), hi=(1 << 62) - 1)
+
+        tmp_ref = sp.expr_var(tmp_vid)
+
+        # Emit: tmp == left binop right
+        binop_code = _BINOP_MAP.get(binop.op)
+        if binop_code is None:
+            raise TranslationError(f"Unsupported BinOp in temp introduction: {binop.op}")
+        sp.add_constraint(sp.expr_binary(BIN_EQ, tmp_ref,
+                                          sp.expr_binary(binop_code, left_ref, right_ref)))
+        return tmp_ref

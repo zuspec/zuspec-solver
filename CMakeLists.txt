@@ -22,6 +22,7 @@ set(ZSP_SOURCES
     src/c/zsp_propagate.c
     src/c/zsp_prop_templates.c
     src/c/zsp_search.c
+    src/c/zsp_shave.c
     src/c/zsp_stack.c
     src/c/zsp_trail.c
 )

@@ -1,8 +1,0 @@
-{
-  "solver": "sim-vlt",
-  "scenario": "socmemmap",
-  "n_solutions": 1000,
-  "bench_ns": 160668872069,
-  "ns_per_solution": 160668872.069,
-  "solutions_per_s": 6.223980956127863
-}

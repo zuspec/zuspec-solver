@@ -169,4 +169,51 @@ void trail_backtrack(SolveCtx *ctx, uint32_t target_level) {
     ctx->trail_top      = mark->trail_top;
     ctx->trail_count    = mark->trail_count;
     ctx->decision_level = target_level;
+
+    /* Clear the propagation queue — any entries left from the conflicting
+     * level are stale (they reference tightened domains that have been
+     * restored).  Clear IN_QUEUE flags too so propagators can be re-woken. */
+    /* Clear the propagation queue — any entries left from the conflicting
+     * level are stale (they reference tightened domains that have been
+     * restored).  Clear IN_QUEUE flags too so propagators can be re-woken. */
+    for (uint32_t lvl = 0; lvl < 16; lvl++) {
+        uint32_t ref = ctx->queue.heads[lvl];
+        while (ref != EXPR_NULL) {
+            Propagator *p = (Propagator *)zsp_pool_ptr(&ctx->pool, ref);
+            uint32_t next = p->queue_next;
+            p->flags &= (uint8_t)~PROP_FLAG_IN_QUEUE;
+            p->flags &= (uint8_t)~PROP_FLAG_ENTAILED;
+            p->queue_next = EXPR_NULL;
+            ref = next;
+        }
+        ctx->queue.heads[lvl] = EXPR_NULL;
+        ctx->queue.tails[lvl] = EXPR_NULL;
+    }
+    ctx->queue.non_empty_mask = 0;
+
+    /* Clear ENTAILED on all propagators reachable via watcher chains.
+     * Propagators that fired and returned PROP_ENTAILED during the
+     * backtracked levels were dequeued, so the queue walk above did not
+     * reach them.  Their entailment may no longer hold after domain
+     * restoration, so they must be eligible for re-firing. */
+    if (ctx->watcher_heads) {
+        for (uint32_t vi = 0; vi < ctx->n_vars; vi++) {
+            uint32_t ref = ctx->watcher_heads[vi];
+            while (ref != EXPR_NULL) {
+                Propagator *p = (Propagator *)zsp_pool_ptr(&ctx->pool, ref);
+                p->flags &= (uint8_t)~PROP_FLAG_ENTAILED;
+                PropWatchSect *ws =
+                    (PropWatchSect *)((char *)p + sizeof(Propagator));
+                uint32_t next = EXPR_NULL;
+                for (uint32_t i = 0; i < ws->n_watches; i++) {
+                    if (ws->var_ids[i] == vi) {
+                        next = ws->next_watchers[i];
+                        break;
+                    }
+                }
+                ref = next;
+            }
+        }
+    }
+
 }
