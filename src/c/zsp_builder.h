@@ -50,6 +50,8 @@ typedef struct {
     ExprRef       sources_head;
     uint32_t      n_alldiffs;
     ExprRef       allDiff_head;
+    uint32_t      n_softs;
+    ExprRef       softs_head;
 } SolveProblemBuilder;
 
 /* ------------------------------------------------------------------ */
@@ -177,6 +179,15 @@ ExprRef builder_add_source(SolveProblemBuilder *b,
  */
 ExprRef builder_add_all_different(SolveProblemBuilder *b,
                                   uint32_t n_vars, const uint32_t *var_ids);
+
+/**
+ * Add a soft (relaxable) constraint.
+ * @param root     ExprRef of the constraint expression root.
+ * @param priority Priority (0 = highest, larger = relaxed first).
+ * @return ExprRef to the SoftSpec, or EXPR_NULL on alloc failure.
+ */
+ExprRef builder_add_soft_constraint(SolveProblemBuilder *b, ExprRef root,
+                                    uint32_t priority);
 /* ------------------------------------------------------------------ */
 /* Query                                                               */
 /* ------------------------------------------------------------------ */

@@ -791,21 +791,143 @@ int solver_compile(SolveCtx *ctx, SolveProblem *sp) {
         if (pref == EXPR_NULL) return -1;
         adref = ad->next;
     }
+
+    /* ---- Walk SoftSpec list -> create assumption-gated propagators ---- */
+    ctx->n_assumptions = 0;
+    ctx->assumption_var_ids = NULL;
+    ctx->assumption_priorities = NULL;
+    ctx->assumption_active_mask = 0;
+
+    if (sp->n_softs > 0) {
+        uint32_t ns = sp->n_softs;
+        /* Allocate assumption tracking arrays */
+        uint32_t av_ref = zsp_pool_alloc(&ctx->pool,
+                                          ns * (uint32_t)sizeof(uint32_t),
+                                          (uint32_t)_Alignof(uint32_t));
+        uint32_t ap_ref = zsp_pool_alloc(&ctx->pool,
+                                          ns * (uint32_t)sizeof(uint32_t),
+                                          (uint32_t)_Alignof(uint32_t));
+        if (av_ref != EXPR_NULL && ap_ref != EXPR_NULL) {
+            ctx->assumption_var_ids = (uint32_t *)zsp_pool_ptr(&ctx->pool, av_ref);
+            ctx->assumption_priorities = (uint32_t *)zsp_pool_ptr(&ctx->pool, ap_ref);
+
+            uint32_t aidx = 0;
+            ExprRef sref = sp->softs_head;
+            while (sref != EXPR_NULL) {
+                SoftSpec *ss = (SoftSpec *)zsp_pool_ptr(&sp->pool, sref);
+
+                /* Create an assumption boolean variable [0,1], pinned to 1 */
+                uint32_t avar_id = ctx->n_vars;
+                if (avar_id < ctx->n_vars_capacity) {
+                    Variable *av = &ctx->vars[avar_id];
+                    av->lo = 1; av->hi = 1;   /* pinned to 1 = active */
+                    av->width = 1; av->flags = 0;
+                    av->holes_offset = 0; av->_pad = 0;
+                    ctx->n_vars = avar_id + 1;
+
+                    if (ctx->watcher_heads)
+                        ctx->watcher_heads[avar_id] = EXPR_NULL;
+                    /* Assumption var is singleton 1, no unassigned bit */
+
+                    /* Record assumption metadata */
+                    ctx->assumption_var_ids[aidx] = avar_id;
+                    ctx->assumption_priorities[aidx] = ss->priority;
+
+                    /* Compile the soft constraint body.
+                     * For var-const comparisons, use Implication propagators
+                     * (which have built-in guard semantics via avar_id)
+                     * instead of _compile_constraint which does compile-time
+                     * tightening that can't be undone by guard relaxation. */
+                    int soft_compiled = 0;
+                    if (ss->root != EXPR_NULL) {
+                        ExprKind sk = *(ExprKind *)zsp_pool_ptr(&sp->pool, ss->root);
+                        if (sk == EXPR_BINARY) {
+                            ExprBinary *se = (ExprBinary *)zsp_pool_ptr(&sp->pool, ss->root);
+                            uint32_t svid; int64_t scv;
+                            int is_vc = _is_var(sp, se->lhs, &svid) && _is_const(sp, se->rhs, &scv);
+                            int is_cv = !is_vc && _is_const(sp, se->lhs, &scv) && _is_var(sp, se->rhs, &svid);
+                            if (is_vc || is_cv) {
+                                /* Flip operator for const-var ordering */
+                                BinOp sop = se->op;
+                                if (is_cv) {
+                                    switch (sop) {
+                                    case BIN_LT:  sop = BIN_GT;  break;
+                                    case BIN_LTE: sop = BIN_GTE; break;
+                                    case BIN_GT:  sop = BIN_LT;  break;
+                                    case BIN_GTE: sop = BIN_LTE; break;
+                                    default: break;
+                                    }
+                                }
+                                /* Create implication propagators gated by avar_id */
+                                switch (sop) {
+                                case BIN_EQ:
+                                    prop_add_implication_32(ctx, avar_id, svid, (int32_t)scv, 1, 0);
+                                    prop_add_implication_32(ctx, avar_id, svid, (int32_t)scv, 0, 0);
+                                    soft_compiled = 1;
+                                    break;
+                                case BIN_LTE:
+                                    prop_add_implication_32(ctx, avar_id, svid, (int32_t)scv, 1, 0);
+                                    soft_compiled = 1;
+                                    break;
+                                case BIN_LT:
+                                    prop_add_implication_32(ctx, avar_id, svid, (int32_t)(scv - 1), 1, 0);
+                                    soft_compiled = 1;
+                                    break;
+                                case BIN_GTE:
+                                    prop_add_implication_32(ctx, avar_id, svid, (int32_t)scv, 0, 0);
+                                    soft_compiled = 1;
+                                    break;
+                                case BIN_GT:
+                                    prop_add_implication_32(ctx, avar_id, svid, (int32_t)(scv + 1), 0, 0);
+                                    soft_compiled = 1;
+                                    break;
+                                default: break;
+                                }
+                            }
+                        }
+                    }
+                    /* Fallback: use _compile_constraint + guard-gating
+                     * for patterns that create propagators */
+                    if (!soft_compiled) {
+                        uint32_t props_before = ctx->n_props;
+                        int r = _compile_constraint(ctx, sp, ss->root);
+                        if (r > 0) {
+                            for (uint32_t pi = props_before; pi < ctx->n_props; pi++) {
+                                if (ctx->prop_guard_vars &&
+                                    pi < ctx->n_prop_refs_capacity)
+                                    ctx->prop_guard_vars[pi] = avar_id;
+                            }
+                        }
+                    }
+
+                    aidx++;
+                }
+                sref = ss->next;
+            }
+            ctx->n_assumptions = aidx;
+            /* All assumptions start active */
+            ctx->assumption_active_mask = (aidx < 64)
+                ? ((1ULL << aidx) - 1) : ~0ULL;
+        }
+    }
+
     /* ---- Save initial variable state for solver_reset() ---- */
+    /* Use ctx->n_vars (not n) to include assumption vars from soft constraints */
     {
+        uint32_t save_n = ctx->n_vars;
         uint32_t iv_ref = zsp_pool_alloc(&ctx->pool,
-                                          n * (uint32_t)sizeof(Variable),
+                                          save_n * (uint32_t)sizeof(Variable),
                                           (uint32_t)_Alignof(Variable));
         if (iv_ref != EXPR_NULL) {
             ctx->initial_vars = (Variable *)zsp_pool_ptr(&ctx->pool, iv_ref);
-            memcpy(ctx->initial_vars, ctx->vars, n * sizeof(Variable));
-            ctx->initial_n_vars = n;
+            memcpy(ctx->initial_vars, ctx->vars, save_n * sizeof(Variable));
+            ctx->initial_n_vars = save_n;
 
             /* For tier-1 vars, also save the WideBounds64 contents.
              * The initial_vars[] have correct holes_offset values, so we
              * can restore from there. The WideBounds64 data at those offsets
              * will be overwritten during solving. Save a copy. */
-            for (uint32_t i = 0; i < n; i++) {
+            for (uint32_t i = 0; i < save_n; i++) {
                 Variable *v = &ctx->vars[i];
                 if (VAR_IS_TIER1(v->flags) && v->holes_offset != 0) {
                     /* The initial_vars[i].holes_offset points to the same

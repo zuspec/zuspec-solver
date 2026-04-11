@@ -31,8 +31,8 @@ SolveProblem *solve_problem_init(void *buf, size_t buf_size) {
     sp->sources_head     = EXPR_NULL;
     sp->n_alldiffs       = 0;
     sp->allDiff_head     = EXPR_NULL;
-    sp->_pad[0]          = 0;
-    sp->_pad[1]          = 0;
+    sp->n_softs          = 0;
+    sp->softs_head       = EXPR_NULL;
 
     size_t pool_buf_size = buf_size - pool_offset;
     if (!zsp_pool_init(&sp->pool, pool_buf_size))
@@ -58,8 +58,8 @@ void solve_problem_reset(SolveProblem *sp) {
     sp->sources_head     = EXPR_NULL;
     sp->n_alldiffs       = 0;
     sp->allDiff_head     = EXPR_NULL;
-    sp->n_alldiffs       = 0;
-    sp->allDiff_head     = EXPR_NULL;
+    sp->n_softs          = 0;
+    sp->softs_head       = EXPR_NULL;
     zsp_pool_reset(&sp->pool);
 }
 
@@ -265,6 +265,21 @@ ExprRef problem_add_all_different(SolveProblem *sp,
         dst[i] = var_ids[i];
     sp->allDiff_head = ref;
     sp->n_alldiffs++;
+    return ref;
+}
+
+
+ExprRef problem_add_soft_constraint(SolveProblem *sp, ExprRef root,
+                                    uint32_t priority) {
+    ExprRef ref = _pool_alloc(sp, (uint32_t)sizeof(SoftSpec),
+                              (uint32_t)_Alignof(SoftSpec));
+    if (ref == EXPR_NULL) return EXPR_NULL;
+    SoftSpec *s       = (SoftSpec *)POOL_PTR(sp, ref);
+    s->next           = sp->softs_head;
+    s->root           = root;
+    s->priority       = priority;
+    sp->softs_head    = ref;
+    sp->n_softs++;
     return ref;
 }
 

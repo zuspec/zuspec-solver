@@ -68,6 +68,42 @@ SolveResult solver_solve(SolveCtx *ctx, const SolveOpts *opts);
  */
 int64_t solver_get_value(const SolveCtx *ctx, uint32_t var_id);
 
+/**
+ * Reset the solver to its post-compile state.
+ * Restores all variable domains, clears trail and decisions,
+ * and re-enqueues all propagators.
+ */
+void solver_reset(SolveCtx *ctx);
+
+/**
+ * Pin a variable to a specific value.
+ * Tightens both lb and ub, then runs propagation.
+ * @return 0 on success, -1 if the pin causes a conflict.
+ */
+int solver_pin_var(SolveCtx *ctx, uint32_t var_id, int64_t value);
+
+/**
+ * Set the RNG seed for the next solve.
+ */
+void solver_set_seed(SolveCtx *ctx, uint64_t seed);
+
+/**
+ * Read values of multiple variables in one call.
+ * @param n       Number of variables to read.
+ * @param var_ids Array of variable IDs.
+ * @param out     Output array (caller-allocated, size >= n).
+ */
+void solver_get_values(const SolveCtx *ctx, uint32_t n,
+                       const uint32_t *var_ids, int64_t *out);
+
+
+/**
+ * Query whether a soft constraint's assumption is still active after solve.
+ * @param assumption_idx  0-based index into the soft constraint list.
+ * @return 1 if active (constraint was satisfied), 0 if relaxed, -1 on error.
+ */
+int solver_soft_active(const SolveCtx *ctx, uint32_t assumption_idx);
+
 #ifdef __cplusplus
 }
 #endif

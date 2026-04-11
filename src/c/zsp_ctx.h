@@ -36,9 +36,25 @@ extern "C" {
 /*   - Decision-level markers (Phase 5)                               */
 /*   - Scratch allocations during search (Phase 7)                    */
 /* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* CheckpointMark -- saved state for incremental checkpoint/restore   */
+/* ------------------------------------------------------------------ */
+#define MAX_CHECKPOINTS 32u
+
+typedef struct {
+    uint32_t         decision_level;
+    uint32_t         n_vars_at_cp;
+    uint32_t         n_props_at_cp;
+    uint32_t         _cp_pad;
+    TrailEntry      *trail_top;
+    uint64_t         trail_count;
+    zsp_stack_mark_t stack_mark;
+} CheckpointMark;
+
 typedef struct SolveCtx {
     Variable          *vars;          /* pointer into static pool      */
     uint32_t           n_vars;        /* number of compiled variables  */
+    uint32_t           n_vars_capacity; /* allocated size of vars array */
     uint32_t           decision_level;
     uint64_t           trail_count;
     uint64_t           conflict_count;
@@ -52,7 +68,19 @@ typedef struct SolveCtx {
     uint32_t          *watcher_heads; /* array[n_vars] in static pool  */
     DecisionRecord    *decisions;     /* array[MAX_DECISION_DEPTH]     */
     int64_t           *phase_save;    /* last tried value per var      */
+    CheckpointMark     checkpoints[MAX_CHECKPOINTS];
+    uint32_t           n_checkpoints;
+    uint32_t          *prop_refs;     /* pool offsets of propagators   */
+    uint32_t           n_prop_refs_capacity;
+    uint32_t          *prop_guard_vars; /* guard var per prop, EXPR_NULL=unconditional */
     PropQueue          queue;         /* 16-level priority queue       */
+    uint64_t           unassigned_mask; /* bit i set = var i unassigned */
+    Variable          *initial_vars;  /* saved copy at post-compile     */
+    uint32_t           initial_n_vars; /* n_vars at compile time        */
+    uint32_t          *assumption_var_ids;   /* var_id per assumption  */
+    uint32_t          *assumption_priorities;/* priority per assumption*/
+    uint32_t           n_assumptions;        /* number of assumptions  */
+    uint64_t           assumption_active_mask;/* bit set = active      */
     uint32_t           _pad;          /* keep pool 16-byte aligned     */
     zsp_pool_t         pool;          /* MUST be last field            */
     /* static pool data region follows immediately                      */
@@ -98,6 +126,26 @@ void solver_destroy(SolveCtx *ctx);
  * @return  0 on success, -1 if the static pool is too small.
  */
 int solver_compile(SolveCtx *ctx, SolveProblem *sp);
+
+/**
+ * Add constraints from an auxiliary SolveProblem to an already-compiled context.
+ *
+ * @return 0 on success, -1 if a new variable exceeds capacity,
+ *         -2 if UNSAT detected during propagation.
+ */
+int solver_add_constraint(SolveCtx *ctx, SolveProblem *aux_sp);
+
+/**
+ * Save a checkpoint of the current solver state.
+ * @return Checkpoint index (0-based), or -1 if MAX_CHECKPOINTS exceeded.
+ */
+int solver_checkpoint(SolveCtx *ctx);
+
+/**
+ * Restore solver state to a previously saved checkpoint.
+ * Undoes domain changes, deactivates propagators added after checkpoint.
+ */
+void solver_restore(SolveCtx *ctx, uint32_t cp);
 
 /* ------------------------------------------------------------------ */
 /* Accessor wrappers (thin C functions for ctypes compatibility)       */

@@ -193,6 +193,17 @@ typedef struct {
     uint32_t n_vars;     /* number of variable IDs that follow */
 } AllDiffSpec;
 
+
+/**
+ * SoftSpec -- a soft (relaxable) constraint with a priority.
+ * Higher priority value = lower priority (relaxed first on conflict).
+ */
+typedef struct {
+    ExprRef  next;       /* next SoftSpec, or EXPR_NULL */
+    ExprRef  root;       /* root ExprRef of the constraint expression */
+    uint32_t priority;   /* 0 = highest priority, larger = relaxed first */
+} SoftSpec;
+
 /* ------------------------------------------------------------------ */
 /* SolveProblem                                                        */
 /*                                                                     */
@@ -212,7 +223,8 @@ typedef struct {
     ExprRef    sources_head;      /* head of SourceSpec linked list    */
     uint32_t   n_alldiffs;         /* number of AllDifferent constraints */
     ExprRef    allDiff_head;       /* head of AllDiffSpec linked list    */
-    uint32_t   _pad[2];           /* keep pool 16-byte aligned         */
+    uint32_t   n_softs;            /* number of soft constraints         */
+    ExprRef    softs_head;         /* head of SoftSpec linked list       */
     zsp_pool_t pool;              /* MUST be last field                */
     /* pool data region follows immediately in the same buffer         */
 } SolveProblem;
@@ -312,6 +324,16 @@ ExprRef problem_add_source(SolveProblem *sp,
  */
 ExprRef problem_add_all_different(SolveProblem *sp,
                                   uint32_t n_vars, const uint32_t *var_ids);
+
+/**
+ * Add a soft (relaxable) constraint.
+ * @param root     ExprRef of the constraint expression root.
+ * @param priority Priority (0 = highest, larger = relaxed first on conflict).
+ * @return ExprRef to the SoftSpec, or EXPR_NULL on overflow.
+ */
+ExprRef problem_add_soft_constraint(SolveProblem *sp, ExprRef root,
+                                    uint32_t priority);
+
 /* ------------------------------------------------------------------ */
 /* Access helpers for variable-length nodes                            */
 /* ------------------------------------------------------------------ */

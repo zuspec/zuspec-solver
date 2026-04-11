@@ -82,6 +82,8 @@ SolveProblemBuilder *builder_create(uint32_t block_size, zsp_alloc_t *alloc) {
     b->sources_head     = EXPR_NULL;
     b->n_alldiffs       = 0;
     b->allDiff_head     = EXPR_NULL;
+    b->n_softs          = 0;
+    b->softs_head       = EXPR_NULL;
 
     /* Allocate the first block */
     b->first = _new_block(b, block_size);
@@ -113,8 +115,8 @@ void builder_reset(SolveProblemBuilder *b) {
     b->sources_head     = EXPR_NULL;
     b->n_alldiffs       = 0;
     b->allDiff_head     = EXPR_NULL;
-    b->n_alldiffs       = 0;
-    b->allDiff_head     = EXPR_NULL;
+    b->n_softs          = 0;
+    b->softs_head       = EXPR_NULL;
 }
 
 void builder_destroy(SolveProblemBuilder *b) {
@@ -203,8 +205,8 @@ SolveProblem *builder_finalize(SolveProblemBuilder *b, size_t *out_size) {
     sp->sources_head     = b->sources_head;
     sp->n_alldiffs       = b->n_alldiffs;
     sp->allDiff_head     = b->allDiff_head;
-    sp->_pad[0]          = 0;
-    sp->_pad[1]          = 0;
+    sp->n_softs          = b->n_softs;
+    sp->softs_head       = b->softs_head;
 
     /* Init the embedded pool header: mark it as fully used */
     sp->pool.capacity = pool_data_size;
@@ -478,5 +480,22 @@ ExprRef builder_add_all_different(SolveProblemBuilder *b,
         dst[i] = var_ids[i];
     b->allDiff_head  = ref;
     b->n_alldiffs++;
+    return ref;
+}
+
+ExprRef builder_add_soft_constraint(SolveProblemBuilder *b, ExprRef root,
+                                    uint32_t priority) {
+    ExprRef ref = builder_alloc(b, (uint32_t)sizeof(SoftSpec),
+                                (uint32_t)_Alignof(SoftSpec));
+    if (ref == EXPR_NULL) return EXPR_NULL;
+
+    uint32_t voff = ref - POOL_HEADER_SZ;
+    uint32_t local = voff - b->current->base_offset;
+    SoftSpec *s = (SoftSpec *)_block_ptr_at(b->current, local);
+    s->next       = b->softs_head;
+    s->root       = root;
+    s->priority   = priority;
+    b->softs_head = ref;
+    b->n_softs++;
     return ref;
 }

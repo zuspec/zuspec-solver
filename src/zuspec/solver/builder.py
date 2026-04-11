@@ -227,3 +227,12 @@ class SolveProblemBuilder:
             ctypes.c_uint32(lo),
             ctypes.c_uint8(lo_width),
         )
+
+    def add_soft_constraint(self, root: int, priority: int = 0) -> int:
+        """Add a soft (relaxable) constraint with a priority."""
+        ref = self._lib.builder_add_soft_constraint(
+            self._b, ctypes.c_uint32(root), ctypes.c_uint32(priority)
+        )
+        if ref == EXPR_NULL:
+            raise RuntimeError("builder_add_soft_constraint returned EXPR_NULL")
+        return ref

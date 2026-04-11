@@ -192,3 +192,10 @@ class SolveProblem:
             ctypes.c_uint32(lo),
             ctypes.c_uint8(lo_width),
         )
+
+    def add_soft_constraint(self, root: int, priority: int = 0) -> int:
+        """Add a soft (relaxable) constraint with a priority.
+        Higher priority value = lower priority (relaxed first on conflict)."""
+        return self._lib.problem_add_soft_constraint(
+            self._sp, ctypes.c_uint32(root), ctypes.c_uint32(priority)
+        )
