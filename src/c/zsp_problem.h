@@ -28,6 +28,7 @@ typedef enum {
     EXPR_IN_SET   = 6,  /* value in {v0, v1, ...}    */
     EXPR_EXTEND   = 7,  /* zero/sign extend          */
     EXPR_EXTRACT  = 8,  /* bit-slice extract         */
+    EXPR_CONCAT   = 9,  /* bit concatenation         */
 } ExprKind;
 
 /* ------------------------------------------------------------------ */
@@ -134,6 +135,17 @@ typedef struct {
     ExprRef  operand;
 } ExprExtract;
 
+
+/** Bit concatenation: result = {hi, lo}
+ *  lo_width is the bit width of the lo operand. */
+typedef struct {
+    ExprKind kind;       /* EXPR_CONCAT  */
+    uint8_t  lo_width;   /* width of lo operand in bits */
+    uint8_t  _pad[3];
+    ExprRef  hi;
+    ExprRef  lo;
+} ExprConcat;
+
 /* ------------------------------------------------------------------ */
 /* Variable / Constraint / Source specifications                       */
 /* ------------------------------------------------------------------ */
@@ -172,6 +184,15 @@ typedef struct {
     uint32_t n_vars;  /* number of variable IDs that follow */
 } SourceSpec;
 
+/**
+ * AllDiffSpec -- declares an all-different constraint over a set of vars.
+ * n_vars uint32_t variable IDs follow immediately in pool memory.
+ */
+typedef struct {
+    ExprRef  next;       /* next AllDiffSpec, or EXPR_NULL */
+    uint32_t n_vars;     /* number of variable IDs that follow */
+} AllDiffSpec;
+
 /* ------------------------------------------------------------------ */
 /* SolveProblem                                                        */
 /*                                                                     */
@@ -189,6 +210,8 @@ typedef struct {
     ExprRef    vars_head;         /* head of VarSpec linked list       */
     ExprRef    constraints_head;  /* head of ConstraintSpec linked list */
     ExprRef    sources_head;      /* head of SourceSpec linked list    */
+    uint32_t   n_alldiffs;         /* number of AllDifferent constraints */
+    ExprRef    allDiff_head;       /* head of AllDiffSpec linked list    */
     uint32_t   _pad[2];           /* keep pool 16-byte aligned         */
     zsp_pool_t pool;              /* MUST be last field                */
     /* pool data region follows immediately in the same buffer         */
@@ -257,6 +280,8 @@ ExprRef expr_extend(SolveProblem *sp, ExprRef operand,
 ExprRef expr_extract(SolveProblem *sp, ExprRef operand,
                      uint8_t hi_bit, uint8_t lo_bit);
 
+ExprRef expr_concat(SolveProblem *sp, ExprRef hi, ExprRef lo,
+                    uint8_t lo_width);
 /* ------------------------------------------------------------------ */
 /* Problem builders                                                    */
 /* ------------------------------------------------------------------ */
@@ -278,6 +303,15 @@ ExprRef problem_add_constraint(SolveProblem *sp, ExprRef root);
 ExprRef problem_add_source(SolveProblem *sp,
                            uint32_t n_vars, const uint32_t *var_ids);
 
+
+/**
+ * Add an AllDifferent constraint over the given variable IDs.
+ * @param n_vars   Number of variable IDs.
+ * @param var_ids  Array of variable IDs.
+ * @return ExprRef to the AllDiffSpec, or EXPR_NULL on overflow.
+ */
+ExprRef problem_add_all_different(SolveProblem *sp,
+                                  uint32_t n_vars, const uint32_t *var_ids);
 /* ------------------------------------------------------------------ */
 /* Access helpers for variable-length nodes                            */
 /* ------------------------------------------------------------------ */

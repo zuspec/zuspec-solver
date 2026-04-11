@@ -43,6 +43,7 @@ UN_NOT    = 1
 UN_INVERT = 2
 
 EXPR_NULL = 0xFFFF_FFFF
+EXPR_CONCAT = 9
 
 # Default buffer size for a SolveProblem (64 KiB)
 _SP_BUF_SIZE = 65536
@@ -104,6 +105,13 @@ class SolveProblem:
             self._sp, ctypes.c_uint32(len(var_ids)), arr
         )
 
+
+    def add_all_different(self, var_ids: Sequence[int]) -> int:
+        """Add an AllDifferent constraint over the given variable IDs."""
+        arr = (ctypes.c_uint32 * len(var_ids))(*var_ids)
+        return self._lib.problem_add_all_different(
+            self._sp, ctypes.c_uint32(len(var_ids)), arr
+        )
     # ------------------------------------------------------------------ #
     # Expression builders                                                  #
     # ------------------------------------------------------------------ #
@@ -175,4 +183,12 @@ class SolveProblem:
             ctypes.c_uint32(operand),
             ctypes.c_uint8(hi_bit),
             ctypes.c_uint8(lo_bit),
+        )
+
+    def expr_concat(self, hi: int, lo: int, lo_width: int) -> int:
+        return self._lib.expr_concat(
+            self._sp,
+            ctypes.c_uint32(hi),
+            ctypes.c_uint32(lo),
+            ctypes.c_uint8(lo_width),
         )

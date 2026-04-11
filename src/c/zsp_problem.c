@@ -29,6 +29,8 @@ SolveProblem *solve_problem_init(void *buf, size_t buf_size) {
     sp->vars_head        = EXPR_NULL;
     sp->constraints_head = EXPR_NULL;
     sp->sources_head     = EXPR_NULL;
+    sp->n_alldiffs       = 0;
+    sp->allDiff_head     = EXPR_NULL;
     sp->_pad[0]          = 0;
     sp->_pad[1]          = 0;
 
@@ -54,6 +56,10 @@ void solve_problem_reset(SolveProblem *sp) {
     sp->vars_head        = EXPR_NULL;
     sp->constraints_head = EXPR_NULL;
     sp->sources_head     = EXPR_NULL;
+    sp->n_alldiffs       = 0;
+    sp->allDiff_head     = EXPR_NULL;
+    sp->n_alldiffs       = 0;
+    sp->allDiff_head     = EXPR_NULL;
     zsp_pool_reset(&sp->pool);
 }
 
@@ -179,6 +185,20 @@ ExprRef expr_extract(SolveProblem *sp, ExprRef operand,
     return ref;
 }
 
+ExprRef expr_concat(SolveProblem *sp, ExprRef hi, ExprRef lo,
+                    uint8_t lo_width) {
+    ExprRef ref = _pool_alloc(sp, (uint32_t)sizeof(ExprConcat),
+                              (uint32_t)_Alignof(ExprConcat));
+    if (ref == EXPR_NULL) return EXPR_NULL;
+    ExprConcat *n = (ExprConcat *)POOL_PTR(sp, ref);
+    n->kind     = EXPR_CONCAT;
+    n->lo_width = lo_width;
+    n->_pad[0] = n->_pad[1] = n->_pad[2] = 0;
+    n->hi       = hi;
+    n->lo       = lo;
+    return ref;
+}
+
 /* ------------------------------------------------------------------ */
 /* Problem builders                                                    */
 /* ------------------------------------------------------------------ */
@@ -231,6 +251,23 @@ ExprRef problem_add_source(SolveProblem *sp,
 }
 
 /* ------------------------------------------------------------------ */
+
+ExprRef problem_add_all_different(SolveProblem *sp,
+                                  uint32_t n_vars, const uint32_t *var_ids) {
+    uint32_t total = (uint32_t)sizeof(AllDiffSpec) + n_vars * (uint32_t)sizeof(uint32_t);
+    ExprRef ref = _pool_alloc(sp, total, (uint32_t)_Alignof(AllDiffSpec));
+    if (ref == EXPR_NULL) return EXPR_NULL;
+    AllDiffSpec *ad = (AllDiffSpec *)POOL_PTR(sp, ref);
+    ad->next         = sp->allDiff_head;
+    ad->n_vars       = n_vars;
+    uint32_t *dst    = (uint32_t *)(ad + 1);
+    for (uint32_t i = 0; i < n_vars; i++)
+        dst[i] = var_ids[i];
+    sp->allDiff_head = ref;
+    sp->n_alldiffs++;
+    return ref;
+}
+
 /* Access helpers                                                      */
 /* ------------------------------------------------------------------ */
 

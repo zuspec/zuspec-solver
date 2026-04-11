@@ -26,6 +26,7 @@ typedef enum {
 /* ------------------------------------------------------------------ */
 #define PROP_FLAG_ENTAILED  0x01u
 #define PROP_FLAG_IN_QUEUE  0x02u
+#define PROP_FLAG_WIDE_WATCH 0x04u  /* watcher layout differs from PropWatchSect */
 
 /* ------------------------------------------------------------------ */
 /* Event types (for watcher registration — Phase 7+)                  */
@@ -112,6 +113,29 @@ typedef struct { Propagator hdr; PropWatchSect ws; } BoundsDiv_64_t;
 typedef struct { Propagator hdr; PropWatchSect ws; } BoundsMod_64_t;
 typedef struct { Propagator hdr; PropWatchSect ws; } UnaryNeg_64_t;
 
+/* ITE value: r = cond ? a : b */
+typedef struct { Propagator hdr; PropWatchSect ws; } ITEValue_64_t;
+
+/* Bitwise propagators: r = a OP b */
+typedef struct { Propagator hdr; PropWatchSect ws; } BoundsBAND_64_t;
+typedef struct { Propagator hdr; PropWatchSect ws; } BoundsBOR_64_t;
+typedef struct { Propagator hdr; PropWatchSect ws; } BoundsBXOR_64_t;
+typedef struct { Propagator hdr; PropWatchSect ws; } BoundsBNOT_64_t;
+
+/* Shift propagators */
+typedef struct { Propagator hdr; PropWatchSect ws; } BoundsSHL_64_t;
+typedef struct { Propagator hdr; PropWatchSect ws; } BoundsLSHR_64_t;
+
+
+/* Concat propagator: r = {hi, lo} where lo is lo_width bits wide.
+   var_ids[0]=r, [1]=hi, [2]=lo */
+typedef struct {
+    Propagator    hdr;
+    PropWatchSect ws;
+    uint8_t       lo_width;
+    uint8_t       _cpad[3];
+} BoundsConcat_64_t;
+
 /* InSet_32: x ∈ {elems[0], …, elems[n_elems-1]}
    Template data: n_elems (4), _pad (4), then int32_t elems[] */
 typedef struct {
@@ -169,6 +193,11 @@ typedef struct {
 /** Enqueue a propagator (no-op if already queued or entailed). */
 void prop_enqueue(SolveCtx *ctx, uint32_t prop_ref);
 
+/** Set a guard variable on a propagator. When guard is 0, propagator is
+ *  entailed; when guard is undecided (lo!=hi), propagator is skipped;
+ *  when guard is 1, propagator fires normally. */
+void prop_set_guard(SolveCtx *ctx, uint32_t prop_ref, uint32_t guard_var_id);
+
 /* ------------------------------------------------------------------ */
 /* Domain-tightening functions                                        */
 /*                                                                     */
@@ -195,6 +224,12 @@ PropResult ctx_tighten_ub64(SolveCtx *ctx, uint32_t var_id, int64_t new_ub);
  * @return PROP_OK on fixedpoint, PROP_CONFLICT if any domain empties.
  */
 PropResult solver_propagate(SolveCtx *ctx);
+
+/**
+ * Run propagation only (no search).  Returns PROP_OK or PROP_CONFLICT.
+ * Useful for fast feasibility checks.
+ */
+PropResult solver_propagate_only(SolveCtx *ctx);
 
 /* ------------------------------------------------------------------ */
 /* Propagator constructors                                             */
@@ -225,6 +260,44 @@ uint32_t prop_add_bounds_mul_64(SolveCtx *ctx, uint32_t r_id, uint32_t a_id, uin
 uint32_t prop_add_bounds_div_64(SolveCtx *ctx, uint32_t r_id, uint32_t a_id, uint32_t b_id, uint8_t priority);
 uint32_t prop_add_bounds_mod_64(SolveCtx *ctx, uint32_t r_id, uint32_t a_id, uint32_t b_id, uint8_t priority);
 uint32_t prop_add_unary_neg_64(SolveCtx *ctx, uint32_t r_id, uint32_t a_id, uint8_t priority);
+
+/** ITE value propagator: r = cond ? a : b.
+ *  var_ids[0]=r, var_ids[1]=cond, var_ids[2]=a, var_ids[3]=b */
+uint32_t prop_add_ite_value_64(SolveCtx *ctx, uint32_t r_id,
+                                uint32_t cond_id, uint32_t a_id,
+                                uint32_t b_id, uint8_t priority);
+
+/** Bitwise AND: r = a & b.  var_ids[0]=r, [1]=a, [2]=b */
+uint32_t prop_add_bounds_band_64(SolveCtx *ctx, uint32_t r_id,
+                                  uint32_t a_id, uint32_t b_id,
+                                  uint8_t priority);
+/** Bitwise OR: r = a | b */
+uint32_t prop_add_bounds_bor_64(SolveCtx *ctx, uint32_t r_id,
+                                 uint32_t a_id, uint32_t b_id,
+                                 uint8_t priority);
+/** Bitwise XOR: r = a ^ b */
+uint32_t prop_add_bounds_bxor_64(SolveCtx *ctx, uint32_t r_id,
+                                  uint32_t a_id, uint32_t b_id,
+                                  uint8_t priority);
+/** Bitwise NOT: r = ~a.  var_ids[0]=r, [1]=a */
+uint32_t prop_add_bounds_bnot_64(SolveCtx *ctx, uint32_t r_id,
+                                  uint32_t a_id, uint8_t priority);
+
+/** Left shift: r = a << b.  var_ids[0]=r, [1]=a, [2]=b */
+uint32_t prop_add_bounds_shl_64(SolveCtx *ctx, uint32_t r_id,
+                                 uint32_t a_id, uint32_t b_id,
+                                 uint8_t priority);
+/** Logical right shift: r = a >> b */
+uint32_t prop_add_bounds_lshr_64(SolveCtx *ctx, uint32_t r_id,
+                                  uint32_t a_id, uint32_t b_id,
+                                  uint8_t priority);
+
+
+/** Concat: r = {hi, lo}. lo_width is the bit width of lo.
+ *  var_ids[0]=r, [1]=hi, [2]=lo */
+uint32_t prop_add_bounds_concat_64(SolveCtx *ctx, uint32_t r_id,
+                                    uint32_t hi_id, uint32_t lo_id,
+                                    uint8_t lo_width, uint8_t priority);
 
 /**
  * InSet: x ∈ {elems[0], …, elems[n_elems-1]}.
@@ -258,6 +331,33 @@ uint32_t prop_add_bit_slice_32(SolveCtx *ctx, uint32_t r_id, uint32_t a_id,
 uint32_t prop_add_bit_slice_64(SolveCtx *ctx, uint32_t r_id, uint32_t a_id,
                                 uint8_t hi_bit, uint8_t lo_bit, uint8_t priority);
 
+
+/* ------------------------------------------------------------------ */
+/* AllDifferent: x0, x1, ..., xN are all distinct (up to 16 vars)    */
+/*                                                                     */
+/* Uses PROP_FLAG_WIDE_WATCH because it watches more variables than   */
+/* PropWatchSect supports (>4).  _wake_var checks this flag to use    */
+/* the custom watcher_nexts array instead of PropWatchSect.           */
+/* ------------------------------------------------------------------ */
+#define MAX_ALLDIFF_VARS 16u
+
+typedef struct {
+    Propagator    hdr;
+    uint32_t      n_vars;
+    uint32_t      var_ids[MAX_ALLDIFF_VARS];
+    uint32_t      watcher_nexts[MAX_ALLDIFF_VARS];
+} AllDifferent_t;
+
+/**
+ * AllDifferent constraint: all watched variables must have distinct values.
+ *
+ * @param n_vars   Number of variables (2 <= n_vars <= MAX_ALLDIFF_VARS).
+ * @param var_ids  Array of variable IDs.
+ * @param priority Queue priority level.
+ * @return Pool offset of the propagator, or EXPR_NULL on failure.
+ */
+uint32_t prop_add_all_different(SolveCtx *ctx, uint32_t n_vars,
+                                 const uint32_t *var_ids, uint8_t priority);
 #ifdef __cplusplus
 }
 #endif
