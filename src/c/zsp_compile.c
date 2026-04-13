@@ -230,6 +230,35 @@ static int _flatten_or(SolveProblem *sp, ExprRef ref,
 /* Forward declaration */
 static int _compile_constraint(SolveCtx *ctx, SolveProblem *sp, ExprRef root);
 
+/* ------------------------------------------------------------------ */
+/* Union-Find for variable aliasing                                    */
+/* ------------------------------------------------------------------ */
+
+/** Find the root representative of var_id in the alias table. */
+static uint32_t _alias_find(uint32_t *alias, uint32_t id) {
+    while (alias[id] != id) {
+        alias[id] = alias[alias[id]];  /* path compression */
+        id = alias[id];
+    }
+    return id;
+}
+
+/** Merge two variables: the one with the smaller ID becomes root. */
+static void _alias_union(uint32_t *alias, uint32_t a, uint32_t b) {
+    uint32_t ra = _alias_find(alias, a);
+    uint32_t rb = _alias_find(alias, b);
+    if (ra == rb) return;
+    /* Smaller ID is the root (deterministic, preserves user var ordering) */
+    if (ra < rb) alias[rb] = ra;
+    else         alias[ra] = rb;
+}
+
+/** Resolve a var_id through the alias table. No-op if alias is NULL. */
+static inline uint32_t _resolve(const SolveCtx *ctx, uint32_t vid) {
+    if (ctx->var_alias == NULL) return vid;
+    return _alias_find(ctx->var_alias, vid);
+}
+
 /* Helper: compile a constraint body in a guard-gated context.
  * Unlike _compile_constraint, this avoids compile-time bound tightening for
  * var-const patterns (which is irreversible and can't be gated). Instead,
@@ -304,6 +333,9 @@ static int _compile_binexpr_eq_var(SolveCtx *ctx, SolveProblem *sp,
     int has_var_var = _is_var(sp, binop->lhs, &a_id) && _is_var(sp, binop->rhs, &b_id);
     int has_const_var = _is_const(sp, binop->lhs, &cv) && _is_var(sp, binop->rhs, &b_id);
     int has_var_const = _is_var(sp, binop->lhs, &a_id) && _is_const(sp, binop->rhs, &cv);
+    if (has_var_var) { a_id = _resolve(ctx, a_id); b_id = _resolve(ctx, b_id); }
+    if (has_const_var) { b_id = _resolve(ctx, b_id); }
+    if (has_var_const) { a_id = _resolve(ctx, a_id); }
 
     /* Promote constants to const-variables */
     if (has_var_const && !has_var_var) {
@@ -394,6 +426,11 @@ static int _compile_constraint(SolveCtx *ctx, SolveProblem *sp, ExprRef root) {
 
         /* Binary comparison: var op var */
         if (_is_var(sp, e->lhs, &lid) && _is_var(sp, e->rhs, &rid2)) {
+            /* Resolve through alias table */
+            lid = _resolve(ctx, lid);
+            rid2 = _resolve(ctx, rid2);
+            /* If aliased to same root, this EQ is already satisfied */
+            if (lid == rid2 && e->op == BIN_EQ) return 1;
             /* Use 64-bit propagators if either variable is promoted to tier-1+ */
             int wide = _var_needs_wide(ctx, lid) || _var_needs_wide(ctx, rid2);
             uint16_t w = wide ? 64 : (ctx->vars[lid].width > ctx->vars[rid2].width
@@ -425,9 +462,11 @@ static int _compile_constraint(SolveCtx *ctx, SolveProblem *sp, ExprRef root) {
         {
             uint32_t vid2; int64_t cv2;
             if (_is_var(sp, e->lhs, &vid2) && _is_const(sp, e->rhs, &cv2)) {
+                vid2 = _resolve(ctx, vid2);
                 int r = _compile_var_const_cmp(ctx, e->op, vid2, cv2, 0);
                 if (r != 0) return r;  /* 1 = compiled, -1 = UNSAT */
             } else if (_is_const(sp, e->lhs, &cv2) && _is_var(sp, e->rhs, &vid2)) {
+                vid2 = _resolve(ctx, vid2);
                 int r = _compile_var_const_cmp(ctx, e->op, vid2, cv2, 1);
                 if (r != 0) return r;
             }
@@ -481,7 +520,7 @@ static int _compile_constraint(SolveCtx *ctx, SolveProblem *sp, ExprRef root) {
             }
             if (var_side != EXPR_NULL && expr_side != EXPR_NULL) {
                 ExprVar *ev = (ExprVar *)zsp_pool_ptr(&sp->pool, var_side);
-                uint32_t r_id = ev->var_id;
+                uint32_t r_id = _resolve(ctx, ev->var_id);
                 ExprBinary *binop = (ExprBinary *)zsp_pool_ptr(&sp->pool, expr_side);
                 uint32_t a_id, b_id;
                 int64_t cv;
@@ -1104,10 +1143,12 @@ int solver_compile(SolveCtx *ctx, SolveProblem *sp) {
         ref = vs->next;
     }
 
-    /* Build unassigned_mask: set bits for non-singleton variables */
+    /* Build unassigned_mask: set bits for non-singleton, non-aliased variables */
     if (n <= 64) {
         uint64_t mask = 0;
         for (uint32_t i = 0; i < n; i++) {
+            /* Skip aliased (non-root) variables */
+            if (ctx->var_alias && ctx->var_alias[i] != i) continue;
             Variable *v = &ctx->vars[i];
             int64_t lo = var_lo64(ctx, v);
             int64_t hi = var_hi64(ctx, v);
@@ -1142,6 +1183,56 @@ int solver_compile(SolveCtx *ctx, SolveProblem *sp) {
     if (gv_ref == EXPR_NULL) return -1;
     ctx->prop_guard_vars = (uint32_t *)zsp_pool_ptr(&ctx->pool, gv_ref);
     for (uint32_t i = 0; i < pr_cap; i++) ctx->prop_guard_vars[i] = EXPR_NULL;
+
+    /* ---- Build var alias table (union-find for BIN_EQ(var,var)) ---- */
+    {
+        uint32_t al_ref = zsp_pool_alloc(&ctx->pool,
+                                          capacity * (uint32_t)sizeof(uint32_t),
+                                          (uint32_t)_Alignof(uint32_t));
+        if (al_ref != EXPR_NULL) {
+            ctx->var_alias = (uint32_t *)zsp_pool_ptr(&ctx->pool, al_ref);
+            for (uint32_t i = 0; i < capacity; i++) ctx->var_alias[i] = i;
+
+            /* Pre-scan: collect unconditional BIN_EQ(var, var) constraints */
+            ExprRef scan = sp->constraints_head;
+            while (scan != EXPR_NULL) {
+                ConstraintSpec *cs = (ConstraintSpec *)zsp_pool_ptr(&sp->pool, scan);
+                if (cs->root != EXPR_NULL) {
+                    ExprKind sk = *(ExprKind *)zsp_pool_ptr(&sp->pool, cs->root);
+                    if (sk == EXPR_BINARY) {
+                        ExprBinary *se = (ExprBinary *)zsp_pool_ptr(&sp->pool, cs->root);
+                        if (se->op == BIN_EQ) {
+                            uint32_t lid, rid;
+                            if (_is_var(sp, se->lhs, &lid) && _is_var(sp, se->rhs, &rid)) {
+                                _alias_union(ctx->var_alias, lid, rid);
+                            }
+                        }
+                    }
+                }
+                scan = cs->next;
+            }
+
+            /* Merge domains: for each non-root, intersect with root */
+            for (uint32_t i = 0; i < n; i++) {
+                uint32_t root_id = _alias_find(ctx->var_alias, i);
+                if (root_id != i) {
+                    Variable *rv = &ctx->vars[root_id];
+                    Variable *iv = &ctx->vars[i];
+                    /* Intersect domains */
+                    int64_t new_lo, new_hi;
+                    if (VAR_IS_TIER0(rv->flags) && VAR_IS_TIER0(iv->flags)) {
+                        new_lo = rv->lo > iv->lo ? rv->lo : iv->lo;
+                        new_hi = rv->hi < iv->hi ? rv->hi : iv->hi;
+                        if (new_lo > new_hi) return -2; /* UNSAT */
+                        rv->lo = (int32_t)new_lo;
+                        rv->hi = (int32_t)new_hi;
+                    }
+                    /* Mark aliased var as singleton pointing to root value.
+                     * It won't be in the unassigned set. */
+                }
+            }
+        }
+    }
 
     /* ---- Walk ConstraintSpec list → create propagators ---- */
     int n_uncompiled = 0;

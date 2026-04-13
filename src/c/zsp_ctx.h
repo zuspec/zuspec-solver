@@ -81,6 +81,14 @@ typedef struct SolveCtx {
     uint32_t          *assumption_priorities;/* priority per assumption*/
     uint32_t           n_assumptions;        /* number of assumptions  */
     uint64_t           assumption_active_mask;/* bit set = active      */
+    /* Distribution constraint metadata (Sprint 7) */
+    uint32_t          *dist_offsets;  /* pool offset per var -> DistMeta, 0=none */
+    /* Per-variable hole list for randc exclusions (Sprint 8) */
+    uint32_t          *var_holes_head; /* pool offset per var -> HoleEntry, 0=none */
+    /* Union-find alias table: var_alias[i] == representative of var i.
+     * If var_alias[i] == i, the var is its own representative.
+     * NULL if aliasing is not enabled. */
+    uint32_t          *var_alias;
     uint32_t           _pad;          /* keep pool 16-byte aligned     */
     zsp_pool_t         pool;          /* MUST be last field            */
     /* static pool data region follows immediately                      */

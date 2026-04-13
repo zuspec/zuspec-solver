@@ -47,6 +47,7 @@ SolveCtx *solver_create(void *static_buf, size_t static_size,
     ctx->n_assumptions   = 0;
     ctx->assumption_active_mask = 0;
     ctx->_pad            = 0;
+    ctx->var_alias       = NULL;
 
     /* Init PropQueue — all levels empty */
     ctx->queue.non_empty_mask = 0;
