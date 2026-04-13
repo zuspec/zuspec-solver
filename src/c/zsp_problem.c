@@ -33,6 +33,8 @@ SolveProblem *solve_problem_init(void *buf, size_t buf_size) {
     sp->allDiff_head     = EXPR_NULL;
     sp->n_softs          = 0;
     sp->softs_head       = EXPR_NULL;
+    sp->n_dists          = 0;
+    sp->dists_head       = EXPR_NULL;
 
     size_t pool_buf_size = buf_size - pool_offset;
     if (!zsp_pool_init(&sp->pool, pool_buf_size))
@@ -60,6 +62,8 @@ void solve_problem_reset(SolveProblem *sp) {
     sp->allDiff_head     = EXPR_NULL;
     sp->n_softs          = 0;
     sp->softs_head       = EXPR_NULL;
+    sp->n_dists          = 0;
+    sp->dists_head       = EXPR_NULL;
     zsp_pool_reset(&sp->pool);
 }
 
@@ -199,6 +203,43 @@ ExprRef expr_concat(SolveProblem *sp, ExprRef hi, ExprRef lo,
     return ref;
 }
 
+ExprRef expr_sum(SolveProblem *sp, ExprRef result,
+                 uint32_t n_vars, const ExprRef *var_refs) {
+    uint32_t total = (uint32_t)sizeof(ExprSum) + n_vars * (uint32_t)sizeof(ExprRef);
+    ExprRef ref = _pool_alloc(sp, total, (uint32_t)_Alignof(ExprSum));
+    if (ref == EXPR_NULL) return EXPR_NULL;
+    ExprSum *n = (ExprSum *)POOL_PTR(sp, ref);
+    n->kind    = EXPR_SUM;
+    n->result  = result;
+    n->n_vars  = n_vars;
+    ExprRef *dst = (ExprRef *)(n + 1);
+    for (uint32_t i = 0; i < n_vars; i++)
+        dst[i] = var_refs[i];
+    return ref;
+}
+
+ExprRef expr_countones(SolveProblem *sp, ExprRef result, ExprRef operand) {
+    ExprRef ref = _pool_alloc(sp, (uint32_t)sizeof(ExprCountones),
+                              (uint32_t)_Alignof(ExprCountones));
+    if (ref == EXPR_NULL) return EXPR_NULL;
+    ExprCountones *n = (ExprCountones *)POOL_PTR(sp, ref);
+    n->kind    = EXPR_COUNTONES;
+    n->result  = result;
+    n->operand = operand;
+    return ref;
+}
+
+ExprRef expr_clog2(SolveProblem *sp, ExprRef result, ExprRef operand) {
+    ExprRef ref = _pool_alloc(sp, (uint32_t)sizeof(ExprClog2),
+                              (uint32_t)_Alignof(ExprClog2));
+    if (ref == EXPR_NULL) return EXPR_NULL;
+    ExprClog2 *n = (ExprClog2 *)POOL_PTR(sp, ref);
+    n->kind    = EXPR_CLOG2;
+    n->result  = result;
+    n->operand = operand;
+    return ref;
+}
+
 /* ------------------------------------------------------------------ */
 /* Problem builders                                                    */
 /* ------------------------------------------------------------------ */
@@ -281,6 +322,30 @@ ExprRef problem_add_soft_constraint(SolveProblem *sp, ExprRef root,
     sp->softs_head    = ref;
     sp->n_softs++;
     return ref;
+}
+
+ExprRef problem_add_dist(SolveProblem *sp, uint32_t var_id,
+                        uint32_t n_entries, const DistEntry *entries) {
+    uint32_t total = (uint32_t)sizeof(DistSpec) +
+                     n_entries * (uint32_t)sizeof(DistEntry);
+    ExprRef ref = _pool_alloc(sp, total, (uint32_t)_Alignof(DistSpec));
+    if (ref == EXPR_NULL) return EXPR_NULL;
+    DistSpec *ds      = (DistSpec *)POOL_PTR(sp, ref);
+    ds->next          = sp->dists_head;
+    ds->var_id        = var_id;
+    ds->n_entries     = n_entries;
+    DistEntry *dst    = (DistEntry *)(ds + 1);
+    for (uint32_t i = 0; i < n_entries; i++)
+        dst[i] = entries[i];
+    sp->dists_head    = ref;
+    sp->n_dists++;
+    return ref;
+}
+
+DistEntry *dist_spec_entries(SolveProblem *sp, ExprRef dist_ref) {
+    if (dist_ref == EXPR_NULL) return NULL;
+    DistSpec *ds = (DistSpec *)POOL_PTR(sp, dist_ref);
+    return (DistEntry *)(ds + 1);
 }
 
 /* Access helpers                                                      */

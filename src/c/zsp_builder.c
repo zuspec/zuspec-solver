@@ -84,6 +84,8 @@ SolveProblemBuilder *builder_create(uint32_t block_size, zsp_alloc_t *alloc) {
     b->allDiff_head     = EXPR_NULL;
     b->n_softs          = 0;
     b->softs_head       = EXPR_NULL;
+    b->n_dists          = 0;
+    b->dists_head       = EXPR_NULL;
 
     /* Allocate the first block */
     b->first = _new_block(b, block_size);
@@ -117,6 +119,8 @@ void builder_reset(SolveProblemBuilder *b) {
     b->allDiff_head     = EXPR_NULL;
     b->n_softs          = 0;
     b->softs_head       = EXPR_NULL;
+    b->n_dists          = 0;
+    b->dists_head       = EXPR_NULL;
 }
 
 void builder_destroy(SolveProblemBuilder *b) {
@@ -207,6 +211,8 @@ SolveProblem *builder_finalize(SolveProblemBuilder *b, size_t *out_size) {
     sp->allDiff_head     = b->allDiff_head;
     sp->n_softs          = b->n_softs;
     sp->softs_head       = b->softs_head;
+    sp->n_dists          = b->n_dists;
+    sp->dists_head       = b->dists_head;
 
     /* Init the embedded pool header: mark it as fully used */
     sp->pool.capacity = pool_data_size;
@@ -402,6 +408,54 @@ ExprRef builder_expr_concat(SolveProblemBuilder *b, ExprRef hi,
     return ref;
 }
 
+ExprRef builder_expr_sum(SolveProblemBuilder *b, ExprRef result,
+                         uint32_t n_vars, const ExprRef *var_refs) {
+    uint32_t total = (uint32_t)sizeof(ExprSum) + n_vars * (uint32_t)sizeof(ExprRef);
+    ExprRef ref = builder_alloc(b, total, (uint32_t)_Alignof(ExprSum));
+    if (ref == EXPR_NULL) return EXPR_NULL;
+
+    uint32_t voff = ref - POOL_HEADER_SZ;
+    uint32_t local = voff - b->current->base_offset;
+    ExprSum *n = (ExprSum *)_block_ptr_at(b->current, local);
+    n->kind   = EXPR_SUM;
+    n->result = result;
+    n->n_vars = n_vars;
+    ExprRef *dst = (ExprRef *)((char *)n + sizeof(ExprSum));
+    for (uint32_t i = 0; i < n_vars; i++)
+        dst[i] = var_refs[i];
+    return ref;
+}
+
+ExprRef builder_expr_countones(SolveProblemBuilder *b, ExprRef result,
+                                ExprRef operand) {
+    ExprRef ref = builder_alloc(b, (uint32_t)sizeof(ExprCountones),
+                                (uint32_t)_Alignof(ExprCountones));
+    if (ref == EXPR_NULL) return EXPR_NULL;
+
+    uint32_t voff = ref - POOL_HEADER_SZ;
+    uint32_t local = voff - b->current->base_offset;
+    ExprCountones *n = (ExprCountones *)_block_ptr_at(b->current, local);
+    n->kind    = EXPR_COUNTONES;
+    n->result  = result;
+    n->operand = operand;
+    return ref;
+}
+
+ExprRef builder_expr_clog2(SolveProblemBuilder *b, ExprRef result,
+                            ExprRef operand) {
+    ExprRef ref = builder_alloc(b, (uint32_t)sizeof(ExprClog2),
+                                (uint32_t)_Alignof(ExprClog2));
+    if (ref == EXPR_NULL) return EXPR_NULL;
+
+    uint32_t voff = ref - POOL_HEADER_SZ;
+    uint32_t local = voff - b->current->base_offset;
+    ExprClog2 *n = (ExprClog2 *)_block_ptr_at(b->current, local);
+    n->kind    = EXPR_CLOG2;
+    n->result  = result;
+    n->operand = operand;
+    return ref;
+}
+
 /* ------------------------------------------------------------------ */
 /* Problem builders                                                    */
 /* ------------------------------------------------------------------ */
@@ -497,5 +551,26 @@ ExprRef builder_add_soft_constraint(SolveProblemBuilder *b, ExprRef root,
     s->priority   = priority;
     b->softs_head = ref;
     b->n_softs++;
+    return ref;
+}
+
+ExprRef builder_add_dist(SolveProblemBuilder *b, uint32_t var_id,
+                         uint32_t n_entries, const DistEntry *entries) {
+    uint32_t total = (uint32_t)sizeof(DistSpec) +
+                     n_entries * (uint32_t)sizeof(DistEntry);
+    ExprRef ref = builder_alloc(b, total, (uint32_t)_Alignof(DistSpec));
+    if (ref == EXPR_NULL) return EXPR_NULL;
+
+    uint32_t voff = ref - POOL_HEADER_SZ;
+    uint32_t local = voff - b->current->base_offset;
+    DistSpec *ds = (DistSpec *)_block_ptr_at(b->current, local);
+    ds->next      = b->dists_head;
+    ds->var_id    = var_id;
+    ds->n_entries = n_entries;
+    DistEntry *dst = (DistEntry *)(ds + 1);
+    for (uint32_t i = 0; i < n_entries; i++)
+        dst[i] = entries[i];
+    b->dists_head = ref;
+    b->n_dists++;
     return ref;
 }

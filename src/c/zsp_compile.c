@@ -823,6 +823,45 @@ static int _compile_constraint(SolveCtx *ctx, SolveProblem *sp, ExprRef root) {
         }
     }
 
+    /* ---- EXPR_SUM: result == sum of var_ids[] ---- */
+    if (k == EXPR_SUM) {
+        ExprSum *es = (ExprSum *)zsp_pool_ptr(&sp->pool, root);
+        uint32_t r_id;
+        if (!_is_var(sp, es->result, &r_id)) return 0;
+
+        ExprRef *sum_refs = (ExprRef *)(es + 1);
+        uint32_t summand_ids[MAX_SUM_VARS];
+        uint32_t ns = es->n_vars;
+        if (ns > MAX_SUM_VARS) return 0;
+
+        for (uint32_t i = 0; i < ns; i++) {
+            if (!_is_var(sp, sum_refs[i], &summand_ids[i])) return 0;
+        }
+
+        uint32_t ref = prop_add_sum_eq_32(ctx, r_id, ns, summand_ids, 0);
+        return (ref != EXPR_NULL) ? 1 : 0;
+    }
+
+    /* ---- EXPR_COUNTONES: result == popcount(operand) ---- */
+    if (k == EXPR_COUNTONES) {
+        ExprCountones *ec = (ExprCountones *)zsp_pool_ptr(&sp->pool, root);
+        uint32_t r_id, x_id;
+        if (!_is_var(sp, ec->result, &r_id)) return 0;
+        if (!_is_var(sp, ec->operand, &x_id)) return 0;
+        uint32_t ref = prop_add_countones_32(ctx, r_id, x_id, 0);
+        return (ref != EXPR_NULL) ? 1 : 0;
+    }
+
+    /* ---- EXPR_CLOG2: result == ceil(log2(operand)) ---- */
+    if (k == EXPR_CLOG2) {
+        ExprClog2 *ec = (ExprClog2 *)zsp_pool_ptr(&sp->pool, root);
+        uint32_t r_id, x_id;
+        if (!_is_var(sp, ec->result, &r_id)) return 0;
+        if (!_is_var(sp, ec->operand, &x_id)) return 0;
+        uint32_t ref = prop_add_clog2_32(ctx, r_id, x_id, 0);
+        return (ref != EXPR_NULL) ? 1 : 0;
+    }
+
     /* EXPR_UNARY, EXPR_IN_SET etc. are not yet handled natively */
     return 0;
 }
@@ -1260,4 +1299,42 @@ int solver_add_constraint(SolveCtx *ctx, SolveProblem *aux_sp) {
     if (pr == PROP_CONFLICT) return -2;
 
     return n_uncompiled;
+}
+
+/* ------------------------------------------------------------------ */
+/* solver_add_array_vars — bulk-create element variables               */
+/* ------------------------------------------------------------------ */
+
+int solver_add_array_vars(SolveCtx *ctx,
+                          uint32_t elem_var_base,
+                          uint32_t n_elems,
+                          uint8_t  width,
+                          uint8_t  is_signed,
+                          int64_t  lo,
+                          int64_t  hi) {
+    uint32_t end = elem_var_base + n_elems;
+    if (end > ctx->n_vars_capacity) return -1;
+
+    uint8_t flags = is_signed ? VAR_SIGNED : 0;
+    for (uint32_t i = elem_var_base; i < end; i++) {
+        Variable *v = &ctx->vars[i];
+        int rc;
+        if (width < 32) {
+            _init_tier0(v, width, flags, lo, hi);
+            rc = 0;
+        } else if (width == 32 && is_signed) {
+            _init_tier0(v, width, flags, lo, hi);
+            rc = 0;
+        } else if (width == 32 && !is_signed) {
+            rc = _init_tier1(ctx, v, width, flags, lo, hi);
+        } else if (width <= 64) {
+            rc = _init_tier1(ctx, v, width, flags, lo, hi);
+        } else {
+            rc = _init_tier2(ctx, v, width, flags, lo, hi);
+        }
+        if (rc != 0) return -1;
+        if (ctx->watcher_heads) ctx->watcher_heads[i] = EXPR_NULL;
+    }
+    if (end > ctx->n_vars) ctx->n_vars = end;
+    return 0;
 }

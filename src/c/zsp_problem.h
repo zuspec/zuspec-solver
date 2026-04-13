@@ -29,6 +29,9 @@ typedef enum {
     EXPR_EXTEND   = 7,  /* zero/sign extend          */
     EXPR_EXTRACT  = 8,  /* bit-slice extract         */
     EXPR_CONCAT   = 9,  /* bit concatenation         */
+    EXPR_SUM      = 10, /* n-ary sum: r == v0+v1+...+vN */
+    EXPR_COUNTONES = 11, /* popcount: r == countones(x)  */
+    EXPR_CLOG2    = 12, /* r == ceil(log2(x))           */
 } ExprKind;
 
 /* ------------------------------------------------------------------ */
@@ -146,6 +149,29 @@ typedef struct {
     ExprRef  lo;
 } ExprConcat;
 
+/** N-ary sum: result == var_ids[0] + var_ids[1] + ... + var_ids[n-1].
+ *  n_vars uint32_t var_ids follow immediately after this struct in pool. */
+typedef struct {
+    ExprKind kind;       /* EXPR_SUM */
+    ExprRef  result;     /* result variable ExprRef   */
+    uint32_t n_vars;     /* number of summand variables */
+    /* uint32_t var_ids[n_vars] follow in pool */
+} ExprSum;
+
+/** Popcount: result == number of 1-bits in operand. */
+typedef struct {
+    ExprKind kind;       /* EXPR_COUNTONES */
+    ExprRef  result;     /* result variable ExprRef  */
+    ExprRef  operand;    /* input variable ExprRef   */
+} ExprCountones;
+
+/** Ceil-log2: result == ceil(log2(operand)). operand must be > 0. */
+typedef struct {
+    ExprKind kind;       /* EXPR_CLOG2   */
+    ExprRef  result;     /* result variable ExprRef  */
+    ExprRef  operand;    /* input variable ExprRef   */
+} ExprClog2;
+
 /* ------------------------------------------------------------------ */
 /* Variable / Constraint / Source specifications                       */
 /* ------------------------------------------------------------------ */
@@ -204,6 +230,29 @@ typedef struct {
     uint32_t priority;   /* 0 = highest priority, larger = relaxed first */
 } SoftSpec;
 
+/**
+ * DistEntry -- one range/weight pair in a distribution constraint.
+ */
+typedef struct {
+    int64_t  lo;           /* lower bound of the range               */
+    int64_t  hi;           /* upper bound of the range               */
+    uint32_t weight;       /* := weight (per-value) or :/ weight     */
+    uint8_t  is_per_value; /* 1 = := (weight per value), 0 = :/ (weight divided across range) */
+    uint8_t  _dpad[3];
+} DistEntry;
+
+/**
+ * DistSpec -- declares a distribution constraint on a variable.
+ * n_entries DistEntry values follow immediately in pool memory.
+ * Use dist_spec_entries() to obtain the pointer.
+ */
+typedef struct {
+    ExprRef  next;       /* next DistSpec, or EXPR_NULL */
+    uint32_t var_id;     /* variable this distribution applies to   */
+    uint32_t n_entries;  /* number of DistEntry items that follow   */
+} DistSpec;
+
+
 /* ------------------------------------------------------------------ */
 /* SolveProblem                                                        */
 /*                                                                     */
@@ -225,6 +274,8 @@ typedef struct {
     ExprRef    allDiff_head;       /* head of AllDiffSpec linked list    */
     uint32_t   n_softs;            /* number of soft constraints         */
     ExprRef    softs_head;         /* head of SoftSpec linked list       */
+    uint32_t   n_dists;            /* number of distribution constraints */
+    ExprRef    dists_head;         /* head of DistSpec linked list       */
     zsp_pool_t pool;              /* MUST be last field                */
     /* pool data region follows immediately in the same buffer         */
 } SolveProblem;
@@ -294,6 +345,20 @@ ExprRef expr_extract(SolveProblem *sp, ExprRef operand,
 
 ExprRef expr_concat(SolveProblem *sp, ExprRef hi, ExprRef lo,
                     uint8_t lo_width);
+
+/** Build an N-ary sum expression: result == sum of var_ids[].
+ *  @param result   ExprRef of the result variable.
+ *  @param n_vars   Number of summand variable ExprRefs.
+ *  @param var_refs Array of ExprRef values for summand variables. */
+ExprRef expr_sum(SolveProblem *sp, ExprRef result,
+                 uint32_t n_vars, const ExprRef *var_refs);
+
+/** Build a countones (popcount) expression: result == popcount(operand). */
+ExprRef expr_countones(SolveProblem *sp, ExprRef result, ExprRef operand);
+
+/** Build a clog2 expression: result == ceil(log2(operand)). */
+ExprRef expr_clog2(SolveProblem *sp, ExprRef result, ExprRef operand);
+
 /* ------------------------------------------------------------------ */
 /* Problem builders                                                    */
 /* ------------------------------------------------------------------ */
@@ -333,6 +398,19 @@ ExprRef problem_add_all_different(SolveProblem *sp,
  */
 ExprRef problem_add_soft_constraint(SolveProblem *sp, ExprRef root,
                                     uint32_t priority);
+
+/**
+ * Add a distribution constraint on a variable.
+ * @param var_id     Variable ID this distribution applies to.
+ * @param n_entries  Number of DistEntry items.
+ * @param entries    Array of DistEntry values (copied into the pool).
+ * @return ExprRef to the DistSpec, or EXPR_NULL on overflow.
+ */
+ExprRef problem_add_dist(SolveProblem *sp, uint32_t var_id,
+                         uint32_t n_entries, const DistEntry *entries);
+
+/** Return a pointer to the entry array of a DistSpec node. */
+DistEntry *dist_spec_entries(SolveProblem *sp, ExprRef dist_ref);
 
 /* ------------------------------------------------------------------ */
 /* Access helpers for variable-length nodes                            */

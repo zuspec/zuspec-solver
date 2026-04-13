@@ -52,6 +52,8 @@ typedef struct {
     ExprRef       allDiff_head;
     uint32_t      n_softs;
     ExprRef       softs_head;
+    uint32_t      n_dists;
+    ExprRef       dists_head;
 } SolveProblemBuilder;
 
 /* ------------------------------------------------------------------ */
@@ -146,6 +148,18 @@ ExprRef builder_expr_extract(SolveProblemBuilder *b, ExprRef operand,
 ExprRef builder_expr_concat(SolveProblemBuilder *b, ExprRef hi,
                            ExprRef lo, uint8_t lo_width);
 
+/** Build an N-ary sum expression. var_refs[] are ExprRef for summand vars. */
+ExprRef builder_expr_sum(SolveProblemBuilder *b, ExprRef result,
+                         uint32_t n_vars, const ExprRef *var_refs);
+
+/** Build a countones (popcount) expression. */
+ExprRef builder_expr_countones(SolveProblemBuilder *b, ExprRef result,
+                                ExprRef operand);
+
+/** Build a clog2 expression. */
+ExprRef builder_expr_clog2(SolveProblemBuilder *b, ExprRef result,
+                            ExprRef operand);
+
 /* ------------------------------------------------------------------ */
 /* Problem builders (mirror zsp_problem.h API)                         */
 /* ------------------------------------------------------------------ */
@@ -188,6 +202,17 @@ ExprRef builder_add_all_different(SolveProblemBuilder *b,
  */
 ExprRef builder_add_soft_constraint(SolveProblemBuilder *b, ExprRef root,
                                     uint32_t priority);
+
+/**
+ * Add a distribution constraint on a variable.
+ * @param var_id     Variable ID this distribution applies to.
+ * @param n_entries  Number of DistEntry items.
+ * @param entries    Array of DistEntry values (copied into pool).
+ * @return ExprRef to the DistSpec, or EXPR_NULL on alloc failure.
+ */
+ExprRef builder_add_dist(SolveProblemBuilder *b, uint32_t var_id,
+                         uint32_t n_entries, const DistEntry *entries);
+
 /* ------------------------------------------------------------------ */
 /* Query                                                               */
 /* ------------------------------------------------------------------ */

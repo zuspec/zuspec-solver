@@ -44,9 +44,23 @@ UN_INVERT = 2
 
 EXPR_NULL = 0xFFFF_FFFF
 EXPR_CONCAT = 9
+EXPR_SUM = 10
+EXPR_COUNTONES = 11
+EXPR_CLOG2 = 12
 
 # Default buffer size for a SolveProblem (64 KiB)
 _SP_BUF_SIZE = 65536
+
+
+class DistEntry(ctypes.Structure):
+    """ctypes mirror of the C DistEntry struct."""
+    _fields_ = [
+        ("lo",           ctypes.c_int64),
+        ("hi",           ctypes.c_int64),
+        ("weight",       ctypes.c_uint32),
+        ("is_per_value", ctypes.c_uint8),
+        ("_dpad",        ctypes.c_uint8 * 3),
+    ]
 
 
 class SolveProblem:
@@ -198,4 +212,24 @@ class SolveProblem:
         Higher priority value = lower priority (relaxed first on conflict)."""
         return self._lib.problem_add_soft_constraint(
             self._sp, ctypes.c_uint32(root), ctypes.c_uint32(priority)
+        )
+
+    def add_dist(self, var_id: int, entries: Sequence[dict]) -> int:
+        """Add a distribution constraint on a variable.
+
+        Each entry is a dict with keys: lo, hi, weight, is_per_value.
+        is_per_value=True means := (weight per value),
+        is_per_value=False means :/ (weight divided across range).
+        """
+        arr = (DistEntry * len(entries))()
+        for i, e in enumerate(entries):
+            arr[i].lo = e["lo"]
+            arr[i].hi = e["hi"]
+            arr[i].weight = e["weight"]
+            arr[i].is_per_value = 1 if e.get("is_per_value", True) else 0
+        return self._lib.problem_add_dist(
+            self._sp,
+            ctypes.c_uint32(var_id),
+            ctypes.c_uint32(len(entries)),
+            arr,
         )

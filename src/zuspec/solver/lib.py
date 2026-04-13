@@ -62,6 +62,7 @@ def _find_library() -> Optional[Path]:
 
 def _wire_argtypes(lib: ctypes.CDLL) -> None:
     """Set argtypes and restypes on every exported function."""
+    _wire_builder_argtypes(lib)
     c = ctypes
 
     # zsp_block_alloc
@@ -86,6 +87,16 @@ def _wire_argtypes(lib: ctypes.CDLL) -> None:
     lib.problem_add_constraint.argtypes = [c.c_void_p, c.c_uint32]
     lib.problem_add_source.restype  = c.c_uint32
     lib.problem_add_source.argtypes = [c.c_void_p, c.c_uint32, c.c_void_p]
+
+    lib.problem_add_all_different.restype  = c.c_uint32
+    lib.problem_add_all_different.argtypes = [c.c_void_p, c.c_uint32, c.c_void_p]
+
+    lib.problem_add_soft_constraint.restype  = c.c_uint32
+    lib.problem_add_soft_constraint.argtypes = [c.c_void_p, c.c_uint32, c.c_uint32]
+
+    lib.problem_add_dist.restype  = c.c_uint32
+    lib.problem_add_dist.argtypes = [c.c_void_p, c.c_uint32,
+                                     c.c_uint32, c.c_void_p]
 
     # Expression builders
     lib.expr_const.restype  = c.c_uint32
@@ -122,6 +133,25 @@ def _wire_argtypes(lib: ctypes.CDLL) -> None:
     lib.solver_get_value.restype  = c.c_int64
     lib.solver_get_value.argtypes = [c.c_void_p, c.c_uint32]
 
+    lib.solver_add_constraint.restype  = c.c_int
+    lib.solver_add_constraint.argtypes = [c.c_void_p, c.c_void_p]
+
+    lib.solver_exclude_value.restype  = c.c_int
+    lib.solver_exclude_value.argtypes = [c.c_void_p, c.c_uint32, c.c_int64]
+
+    lib.solver_add_array_vars.restype  = c.c_int
+    lib.solver_add_array_vars.argtypes = [c.c_void_p, c.c_uint32, c.c_uint32,
+                                          c.c_uint8, c.c_uint8,
+                                          c.c_int64, c.c_int64]
+
+    lib.solver_checkpoint.restype  = c.c_int
+    lib.solver_checkpoint.argtypes = [c.c_void_p]
+    lib.solver_restore.restype  = None
+    lib.solver_restore.argtypes = [c.c_void_p, c.c_uint32]
+
+    lib.solver_propagate_only.restype  = c.c_int
+    lib.solver_propagate_only.argtypes = [c.c_void_p]
+
     # Variable query helpers
     lib.zsp_var_lo32.restype  = c.c_int32
     lib.zsp_var_lo32.argtypes = [c.c_void_p, c.c_uint32]
@@ -150,3 +180,93 @@ def _load_lib() -> Optional[ctypes.CDLL]:
         return lib
     except OSError:
         return None
+
+
+def _wire_builder_argtypes(lib: ctypes.CDLL) -> None:
+    """Wire argtypes/restypes for the SolveProblemBuilder C API."""
+    c = ctypes
+
+    lib.builder_create.restype  = c.c_void_p
+    lib.builder_create.argtypes = [c.c_uint32, c.c_void_p]
+
+    lib.builder_reset.restype  = None
+    lib.builder_reset.argtypes = [c.c_void_p]
+
+    lib.builder_destroy.restype  = None
+    lib.builder_destroy.argtypes = [c.c_void_p]
+
+    lib.builder_virtual_used.restype  = c.c_uint32
+    lib.builder_virtual_used.argtypes = [c.c_void_p]
+
+    lib.builder_finalize.restype  = c.c_void_p
+    lib.builder_finalize.argtypes = [c.c_void_p, c.POINTER(c.c_size_t)]
+
+    lib.builder_free_problem.restype  = None
+    lib.builder_free_problem.argtypes = [c.c_void_p, c.c_void_p, c.c_size_t]
+
+    lib.builder_alloc.restype  = c.c_uint32
+    lib.builder_alloc.argtypes = [c.c_void_p, c.c_uint32, c.c_uint32]
+
+    lib.builder_expr_const.restype  = c.c_uint32
+    lib.builder_expr_const.argtypes = [c.c_void_p, c.c_int64, c.c_uint8]
+
+    lib.builder_expr_var.restype  = c.c_uint32
+    lib.builder_expr_var.argtypes = [c.c_void_p, c.c_uint32]
+
+    lib.builder_expr_binary.restype  = c.c_uint32
+    lib.builder_expr_binary.argtypes = [c.c_void_p, c.c_uint32,
+                                        c.c_uint32, c.c_uint32]
+
+    lib.builder_expr_unary.restype  = c.c_uint32
+    lib.builder_expr_unary.argtypes = [c.c_void_p, c.c_uint32, c.c_uint32]
+
+    lib.builder_expr_ite.restype  = c.c_uint32
+    lib.builder_expr_ite.argtypes = [c.c_void_p,
+                                     c.c_uint32, c.c_uint32, c.c_uint32]
+
+    lib.builder_expr_in_range.restype  = c.c_uint32
+    lib.builder_expr_in_range.argtypes = [c.c_void_p,
+                                          c.c_uint32, c.c_uint32, c.c_uint32]
+
+    lib.builder_expr_in_set.restype  = c.c_uint32
+    lib.builder_expr_in_set.argtypes = [c.c_void_p, c.c_uint32,
+                                        c.c_uint32, c.c_void_p]
+
+    lib.builder_expr_extend.restype  = c.c_uint32
+    lib.builder_expr_extend.argtypes = [c.c_void_p, c.c_uint32,
+                                        c.c_uint8, c.c_uint8, c.c_uint8]
+
+    lib.builder_expr_extract.restype  = c.c_uint32
+    lib.builder_expr_extract.argtypes = [c.c_void_p, c.c_uint32,
+                                         c.c_uint8, c.c_uint8]
+
+    lib.builder_add_var.restype  = c.c_uint32
+    lib.builder_add_var.argtypes = [c.c_void_p, c.c_uint32,
+                                    c.c_uint8, c.c_uint8,
+                                    c.c_int64, c.c_int64]
+
+    lib.builder_add_constraint.restype  = c.c_uint32
+    lib.builder_add_constraint.argtypes = [c.c_void_p, c.c_uint32]
+
+    lib.builder_add_source.restype  = c.c_uint32
+    lib.builder_add_source.argtypes = [c.c_void_p, c.c_uint32, c.c_void_p]
+
+    lib.builder_add_all_different.restype  = c.c_uint32
+    lib.builder_add_all_different.argtypes = [c.c_void_p, c.c_uint32, c.c_void_p]
+
+    lib.builder_expr_sum.restype  = c.c_uint32
+    lib.builder_expr_sum.argtypes = [c.c_void_p, c.c_uint32,
+                                     c.c_uint32, c.c_void_p]
+
+    lib.builder_expr_countones.restype  = c.c_uint32
+    lib.builder_expr_countones.argtypes = [c.c_void_p, c.c_uint32, c.c_uint32]
+
+    lib.builder_expr_clog2.restype  = c.c_uint32
+    lib.builder_expr_clog2.argtypes = [c.c_void_p, c.c_uint32, c.c_uint32]
+
+    lib.builder_add_soft_constraint.restype  = c.c_uint32
+    lib.builder_add_soft_constraint.argtypes = [c.c_void_p, c.c_uint32, c.c_uint32]
+
+    lib.builder_add_dist.restype  = c.c_uint32
+    lib.builder_add_dist.argtypes = [c.c_void_p, c.c_uint32,
+                                     c.c_uint32, c.c_void_p]

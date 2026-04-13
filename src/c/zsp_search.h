@@ -47,6 +47,41 @@ typedef struct {
 } SolveOpts;
 
 /* ------------------------------------------------------------------ */
+/* DistMeta -- compiled distribution metadata for a single variable   */
+/*                                                                     */
+/* Stored in the static pool; dist_offsets[var_id] points here.       */
+/* n_entries DistMetaEntry values follow immediately after the struct. */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    int64_t  lo;           /* range lower bound                      */
+    int64_t  hi;           /* range upper bound                      */
+    uint64_t cum_weight;   /* cumulative effective weight up to and including this entry */
+    uint32_t weight;       /* raw weight                             */
+    uint8_t  is_per_value; /* 1 = per-value (:=), 0 = per-range (:/)*/
+    uint8_t  _dmpad[3];
+} DistMetaEntry;
+
+typedef struct {
+    uint32_t n_entries;
+    uint32_t _pad;
+    /* DistMetaEntry entries[n_entries] follow immediately */
+} DistMeta;
+
+/* ------------------------------------------------------------------ */
+/* HoleEntry -- linked list node for excluded values (randc support)   */
+/*                                                                     */
+/* Stored in the static pool; var_holes_head[var_id] points to the    */
+/* first entry.  Values are kept sorted ascending for efficient skip. */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    int64_t  value;    /* excluded value                              */
+    uint32_t next;     /* pool offset to next HoleEntry, or 0 = end  */
+    uint32_t _hpad;
+} HoleEntry;
+
+/* ------------------------------------------------------------------ */
 /* API                                                                 */
 /* ------------------------------------------------------------------ */
 
@@ -103,6 +138,38 @@ void solver_get_values(const SolveCtx *ctx, uint32_t n,
  * @return 1 if active (constraint was satisfied), 0 if relaxed, -1 on error.
  */
 int solver_soft_active(const SolveCtx *ctx, uint32_t assumption_idx);
+
+/**
+ * Exclude a specific value from a variable's domain.
+ *
+ * Used for randc (cyclic-random) semantics: after solving, the caller
+ * excludes the obtained value so the next solve cannot pick it again.
+ *
+ * - If value == current lb: tightens lb to lb+1.
+ * - If value == current ub: tightens ub to ub-1.
+ * - Otherwise: adds the value to a per-variable hole list.
+ *
+ * @return 0 on success, -1 if the exclusion empties the domain.
+ */
+int solver_exclude_value(SolveCtx *ctx, uint32_t var_id, int64_t value);
+
+/**
+ * Bulk-create array element variables.
+ *
+ * Creates n_elems variables with IDs [elem_var_base .. elem_var_base+n_elems-1],
+ * all with the same width, signedness, and initial bounds. This is more
+ * efficient than building an auxiliary SolveProblem for the common
+ * "add N identical element variables" pattern.
+ *
+ * @return 0 on success, -1 on capacity overflow.
+ */
+int solver_add_array_vars(SolveCtx *ctx,
+                          uint32_t elem_var_base,
+                          uint32_t n_elems,
+                          uint8_t  width,
+                          uint8_t  is_signed,
+                          int64_t  lo,
+                          int64_t  hi);
 
 #ifdef __cplusplus
 }

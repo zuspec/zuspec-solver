@@ -352,6 +352,7 @@ uint32_t prop_add_bit_slice_64(SolveCtx *ctx, uint32_t r_id, uint32_t a_id,
 typedef struct {
     Propagator    hdr;
     uint32_t      n_vars;
+    uint32_t      _capacity;   /* max var_ids/watcher_nexts entries */
     uint32_t      var_ids[MAX_ALLDIFF_VARS];
     uint32_t      watcher_nexts[MAX_ALLDIFF_VARS];
 } AllDifferent_t;
@@ -397,6 +398,51 @@ uint32_t prop_add_disj_clause(SolveCtx *ctx,
                                const uint32_t *ops,
                                const int64_t *constants,
                                uint8_t priority);
+
+/* ------------------------------------------------------------------ */
+/* SumEq: result == var_ids[0] + var_ids[1] + ... + var_ids[n-1]      */
+/*                                                                     */
+/* Uses PROP_FLAG_WIDE_WATCH for variable-length watch list.           */
+/* var_ids[0] = result, var_ids[1..n] = summands.                     */
+/* ------------------------------------------------------------------ */
+#define MAX_SUM_VARS 64u  /* max summands (not counting result) */
+
+typedef struct {
+    Propagator    hdr;
+    uint32_t      n_vars;      /* total watched vars (1 result + N summands) */
+    uint32_t      _capacity;   /* max var_ids/watcher_nexts entries */
+    uint32_t      var_ids[MAX_SUM_VARS + 1];
+    uint32_t      watcher_nexts[MAX_SUM_VARS + 1];
+} SumEq_32_t;
+
+/**
+ * Sum-equality constraint: result == sum of summand variables.
+ *
+ * @param result_id   Variable ID for the result.
+ * @param n_summands  Number of summand variables (1 <= n <= MAX_SUM_VARS).
+ * @param summand_ids Array of summand variable IDs.
+ * @param priority    Queue priority level.
+ * @return Pool offset of the propagator, or EXPR_NULL on failure.
+ */
+uint32_t prop_add_sum_eq_32(SolveCtx *ctx, uint32_t result_id,
+                             uint32_t n_summands, const uint32_t *summand_ids,
+                             uint8_t priority);
+
+/* ------------------------------------------------------------------ */
+/* Countones_32: result == popcount(operand)                           */
+/* ------------------------------------------------------------------ */
+typedef struct { Propagator hdr; PropWatchSect ws; } Countones_32_t;
+
+uint32_t prop_add_countones_32(SolveCtx *ctx, uint32_t result_id,
+                                uint32_t operand_id, uint8_t priority);
+
+/* ------------------------------------------------------------------ */
+/* Clog2_32: result == ceil(log2(operand))                             */
+/* ------------------------------------------------------------------ */
+typedef struct { Propagator hdr; PropWatchSect ws; } Clog2_32_t;
+
+uint32_t prop_add_clog2_32(SolveCtx *ctx, uint32_t result_id,
+                            uint32_t operand_id, uint8_t priority);
 
 #ifdef __cplusplus
 }

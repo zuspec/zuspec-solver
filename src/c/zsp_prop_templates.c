@@ -1823,6 +1823,7 @@ uint32_t prop_add_all_different(SolveCtx *ctx, uint32_t n_vars,
     ad->hdr.priority   = priority;
     ad->hdr.flags      = PROP_FLAG_WIDE_WATCH;
     ad->n_vars         = n_vars;
+    ad->_capacity      = MAX_ALLDIFF_VARS;
 
     for (uint32_t i = 0; i < n_vars; i++) {
         ad->var_ids[i] = var_ids[i];
@@ -1843,4 +1844,235 @@ uint32_t prop_add_all_different(SolveCtx *ctx, uint32_t n_vars,
         ctx->prop_refs[ad->hdr.prop_id] = ref;
 
     return ref;
+}
+
+/* ------------------------------------------------------------------ */
+/* SumEq_32: result == summand[0] + summand[1] + ... + summand[N-1]   */
+/* ------------------------------------------------------------------ */
+
+static PropResult _fire_sum_eq_32(Propagator *self, SolveCtx *ctx) {
+    SumEq_32_t *s = (SumEq_32_t *)self;
+    uint32_t n = s->n_vars;  /* total watches: [0]=result, [1..n-1]=summands */
+    uint32_t rid = s->var_ids[0];
+    uint32_t n_sum = n - 1;
+
+    /* Compute sum of lower bounds and sum of upper bounds */
+    int64_t sum_lo = 0, sum_hi = 0;
+    for (uint32_t i = 1; i < n; i++) {
+        Variable *v = &ctx->vars[s->var_ids[i]];
+        sum_lo += (int64_t)v->lo;
+        sum_hi += (int64_t)v->hi;
+    }
+
+    /* Forward: tighten result bounds */
+    PropResult r;
+    if ((r = ctx_tighten_lb32(ctx, rid, (int32_t)(sum_lo > INT32_MIN ? sum_lo : INT32_MIN))) != PROP_OK) return r;
+    if ((r = ctx_tighten_ub32(ctx, rid, (int32_t)(sum_hi < INT32_MAX ? sum_hi : INT32_MAX))) != PROP_OK) return r;
+
+    /* Backward: for each summand i, tighten using
+     *   xi_lo >= result_lo - sum_of_others_hi
+     *   xi_hi <= result_hi - sum_of_others_lo */
+    Variable *rv = &ctx->vars[rid];
+    int64_t r_lo = (int64_t)rv->lo;
+    int64_t r_hi = (int64_t)rv->hi;
+
+    for (uint32_t i = 1; i < n; i++) {
+        /* sum of all OTHER summands' bounds */
+        int64_t others_lo = sum_lo - (int64_t)ctx->vars[s->var_ids[i]].lo;
+        int64_t others_hi = sum_hi - (int64_t)ctx->vars[s->var_ids[i]].hi;
+
+        int64_t new_lo = r_lo - others_hi;
+        int64_t new_hi = r_hi - others_lo;
+
+        if (new_lo > INT32_MIN) {
+            if ((r = ctx_tighten_lb32(ctx, s->var_ids[i], (int32_t)new_lo)) != PROP_OK) return r;
+        }
+        if (new_hi < INT32_MAX) {
+            if ((r = ctx_tighten_ub32(ctx, s->var_ids[i], (int32_t)new_hi)) != PROP_OK) return r;
+        }
+    }
+
+    return PROP_OK;
+}
+
+uint32_t prop_add_sum_eq_32(SolveCtx *ctx, uint32_t result_id,
+                             uint32_t n_summands, const uint32_t *summand_ids,
+                             uint8_t priority) {
+    if (n_summands < 1 || n_summands > MAX_SUM_VARS) return EXPR_NULL;
+
+    uint32_t n_total = 1 + n_summands;  /* result + summands */
+
+    uint32_t ref = zsp_pool_alloc(&ctx->pool, (uint32_t)sizeof(SumEq_32_t), 8u);
+    if (ref == EXPR_NULL) return EXPR_NULL;
+
+    SumEq_32_t *s = (SumEq_32_t *)zsp_pool_ptr(&ctx->pool, ref);
+    memset(s, 0, sizeof(SumEq_32_t));
+
+    s->hdr.fire       = _fire_sum_eq_32;
+    s->hdr.queue_next = EXPR_NULL;
+    s->hdr.prop_id    = (uint16_t)ctx->n_props++;
+    s->hdr.priority   = priority;
+    s->hdr.flags      = PROP_FLAG_WIDE_WATCH;
+    s->n_vars         = n_total;
+    s->_capacity      = MAX_SUM_VARS + 1;
+
+    s->var_ids[0] = result_id;
+    for (uint32_t i = 0; i < n_summands; i++) {
+        s->var_ids[1 + i] = summand_ids[i];
+    }
+
+    /* Register watchers */
+    for (uint32_t i = 0; i < n_total; i++) {
+        uint32_t vid = s->var_ids[i];
+        s->watcher_nexts[i]     = ctx->watcher_heads[vid];
+        ctx->watcher_heads[vid] = ref;
+    }
+
+    prop_enqueue(ctx, ref);
+
+    if (ctx->prop_refs && s->hdr.prop_id < ctx->n_prop_refs_capacity)
+        ctx->prop_refs[s->hdr.prop_id] = ref;
+
+    return ref;
+}
+
+/* ------------------------------------------------------------------ */
+/* Countones_32: result == popcount(operand)                           */
+/* ------------------------------------------------------------------ */
+
+static int _popcount32(uint32_t v) {
+    v = v - ((v >> 1) & 0x55555555u);
+    v = (v & 0x33333333u) + ((v >> 2) & 0x33333333u);
+    return (int)(((v + (v >> 4)) & 0x0F0F0F0Fu) * 0x01010101u >> 24);
+}
+
+static PropResult _fire_countones_32(Propagator *self, SolveCtx *ctx) {
+    PropWatchSect *ws = PROP_WS(self);
+    uint32_t rid = ws->var_ids[0];  /* result */
+    uint32_t xid = ws->var_ids[1];  /* operand */
+    Variable *rv = &ctx->vars[rid];
+    Variable *xv = &ctx->vars[xid];
+
+    uint16_t width = xv->width;
+    if (width > 32) width = 32;
+
+    PropResult r;
+
+    /* Forward: bound result from operand's domain */
+    if (xv->lo == xv->hi) {
+        /* Operand is singleton: result is exact popcount */
+        int pc = _popcount32((uint32_t)xv->lo & ((width < 32) ? ((1u << width) - 1) : 0xFFFFFFFFu));
+        if ((r = ctx_tighten_lb32(ctx, rid, pc)) != PROP_OK) return r;
+        if ((r = ctx_tighten_ub32(ctx, rid, pc)) != PROP_OK) return r;
+    } else {
+        /* Coarse bounds: min popcount >= popcount(bits that must be 1),
+         * max popcount <= width - count of bits that must be 0 */
+        uint32_t mask = (width < 32) ? ((1u << width) - 1) : 0xFFFFFFFFu;
+        uint32_t must_1 = (uint32_t)xv->lo & (uint32_t)xv->hi & mask;  /* approximate */
+        int min_pc = _popcount32(must_1);
+        if ((r = ctx_tighten_lb32(ctx, rid, min_pc)) != PROP_OK) return r;
+        if ((r = ctx_tighten_ub32(ctx, rid, (int32_t)width)) != PROP_OK) return r;
+    }
+
+    /* Backward: bound operand from result */
+    if (rv->lo == rv->hi) {
+        int32_t k = rv->lo;
+        if (k < 0 || k > (int32_t)width) return PROP_CONFLICT;
+        if (k == 0) {
+            if ((r = ctx_tighten_lb32(ctx, xid, 0)) != PROP_OK) return r;
+            if ((r = ctx_tighten_ub32(ctx, xid, 0)) != PROP_OK) return r;
+        } else if (k == (int32_t)width) {
+            uint32_t mask = (width < 32) ? ((1u << width) - 1) : 0xFFFFFFFFu;
+            if ((r = ctx_tighten_lb32(ctx, xid, (int32_t)mask)) != PROP_OK) return r;
+            if ((r = ctx_tighten_ub32(ctx, xid, (int32_t)mask)) != PROP_OK) return r;
+        } else if (k > 0 && k <= (int32_t)width) {
+            /* min x with popcount k: lowest k bits set = (1<<k)-1 */
+            uint32_t min_x = (uint32_t)((1u << k) - 1);
+            /* max x with popcount k: highest k bits set (within width) */
+            uint32_t max_x = (width < 32)
+                ? (uint32_t)(((1u << k) - 1) << (width - (uint16_t)k))
+                : (uint32_t)(((1u << k) - 1) << (32 - k));
+            if ((r = ctx_tighten_lb32(ctx, xid, (int32_t)min_x)) != PROP_OK) return r;
+            if ((r = ctx_tighten_ub32(ctx, xid, (int32_t)max_x)) != PROP_OK) return r;
+        }
+    } else {
+        /* result_lo > 0 means operand cannot be 0 */
+        if (rv->lo > 0) {
+            if ((r = ctx_tighten_lb32(ctx, xid, 1)) != PROP_OK) return r;
+        }
+        /* result_hi < width means not all bits can be set */
+        if (rv->hi < (int32_t)width && rv->hi >= 0) {
+            /* max x with at most rv->hi bits set */
+            uint32_t max_bits = (uint32_t)rv->hi;
+            uint32_t max_x = (width < 32)
+                ? (uint32_t)(((1u << max_bits) - 1) << (width - (uint16_t)max_bits))
+                : (uint32_t)(((1u << max_bits) - 1) << (32 - max_bits));
+            if ((r = ctx_tighten_ub32(ctx, xid, (int32_t)max_x)) != PROP_OK) return r;
+        }
+    }
+
+    return PROP_OK;
+}
+
+uint32_t prop_add_countones_32(SolveCtx *ctx, uint32_t result_id,
+                                uint32_t operand_id, uint8_t priority) {
+    uint32_t ids[2] = { result_id, operand_id };
+    return _alloc_prop(ctx, _fire_countones_32, priority, 2, ids,
+                       sizeof(Countones_32_t));
+}
+
+/* ------------------------------------------------------------------ */
+/* Clog2_32: result == ceil(log2(operand))                             */
+/* ------------------------------------------------------------------ */
+
+static int32_t _clog2_32(uint32_t v) {
+    if (v <= 1) return 0;
+    int32_t r = 0;
+    uint32_t t = v - 1;
+    while (t) { r++; t >>= 1; }
+    return r;
+}
+
+static PropResult _fire_clog2_32(Propagator *self, SolveCtx *ctx) {
+    PropWatchSect *ws = PROP_WS(self);
+    uint32_t rid = ws->var_ids[0];  /* result */
+    uint32_t xid = ws->var_ids[1];  /* operand */
+    Variable *rv = &ctx->vars[rid];
+    Variable *xv = &ctx->vars[xid];
+
+    PropResult r;
+
+    /* Guard: operand must be > 0 for clog2 to be defined */
+    if ((r = ctx_tighten_lb32(ctx, xid, 1)) != PROP_OK) return r;
+
+    /* Forward: clog2 is monotonically non-decreasing */
+    int32_t clog_lo = _clog2_32((uint32_t)xv->lo);
+    int32_t clog_hi = _clog2_32((uint32_t)xv->hi);
+    if ((r = ctx_tighten_lb32(ctx, rid, clog_lo)) != PROP_OK) return r;
+    if ((r = ctx_tighten_ub32(ctx, rid, clog_hi)) != PROP_OK) return r;
+
+    /* Backward: if result is singleton k, tighten operand range */
+    if (rv->lo == rv->hi) {
+        int32_t k = rv->lo;
+        if (k == 0) {
+            /* clog2(x) == 0 -> x == 1 */
+            if ((r = ctx_tighten_lb32(ctx, xid, 1)) != PROP_OK) return r;
+            if ((r = ctx_tighten_ub32(ctx, xid, 1)) != PROP_OK) return r;
+        } else if (k > 0 && k < 31) {
+            /* clog2(x) == k -> x in [(1 << (k-1)) + 1, 1 << k] */
+            int32_t x_lo = (1 << (k - 1)) + 1;
+            int32_t x_hi = (1 << k);
+            if ((r = ctx_tighten_lb32(ctx, xid, x_lo)) != PROP_OK) return r;
+            if ((r = ctx_tighten_ub32(ctx, xid, x_hi)) != PROP_OK) return r;
+        }
+    }
+
+    return PROP_OK;
+}
+
+uint32_t prop_add_clog2_32(SolveCtx *ctx, uint32_t result_id,
+                            uint32_t operand_id, uint8_t priority) {
+    uint32_t ids[2] = { result_id, operand_id };
+    return _alloc_prop(ctx, _fire_clog2_32, priority, 2, ids,
+                       sizeof(Clog2_32_t));
 }

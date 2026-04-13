@@ -228,6 +228,28 @@ class SolveProblemBuilder:
             ctypes.c_uint8(lo_width),
         )
 
+    def expr_sum(self, result: int, var_refs: list) -> int:
+        """Build an N-ary sum expression: result == sum of var_refs[]."""
+        n = len(var_refs)
+        arr_t = ctypes.c_uint32 * n
+        arr = arr_t(*var_refs)
+        return self._lib.builder_expr_sum(
+            self._b, ctypes.c_uint32(result),
+            ctypes.c_uint32(n), ctypes.cast(arr, ctypes.c_void_p),
+        )
+
+    def expr_countones(self, result: int, operand: int) -> int:
+        """Build a countones (popcount) expression."""
+        return self._lib.builder_expr_countones(
+            self._b, ctypes.c_uint32(result), ctypes.c_uint32(operand),
+        )
+
+    def expr_clog2(self, result: int, operand: int) -> int:
+        """Build a clog2 expression."""
+        return self._lib.builder_expr_clog2(
+            self._b, ctypes.c_uint32(result), ctypes.c_uint32(operand),
+        )
+
     def add_soft_constraint(self, root: int, priority: int = 0) -> int:
         """Add a soft (relaxable) constraint with a priority."""
         ref = self._lib.builder_add_soft_constraint(
@@ -235,4 +257,26 @@ class SolveProblemBuilder:
         )
         if ref == EXPR_NULL:
             raise RuntimeError("builder_add_soft_constraint returned EXPR_NULL")
+        return ref
+
+    def add_dist(self, var_id: int, entries) -> int:
+        """Add a distribution constraint on a variable.
+
+        Each entry is a dict with keys: lo, hi, weight, is_per_value.
+        """
+        from .problem import DistEntry
+        arr = (DistEntry * len(entries))()
+        for i, e in enumerate(entries):
+            arr[i].lo = e["lo"]
+            arr[i].hi = e["hi"]
+            arr[i].weight = e["weight"]
+            arr[i].is_per_value = 1 if e.get("is_per_value", True) else 0
+        ref = self._lib.builder_add_dist(
+            self._b,
+            ctypes.c_uint32(var_id),
+            ctypes.c_uint32(len(entries)),
+            arr,
+        )
+        if ref == EXPR_NULL:
+            raise RuntimeError("builder_add_dist returned EXPR_NULL")
         return ref
