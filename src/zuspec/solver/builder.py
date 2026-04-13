@@ -228,6 +228,17 @@ class SolveProblemBuilder:
             ctypes.c_uint8(lo_width),
         )
 
+    def expr_array_select(self, base_var_id: int, n_elems: int,
+                          result: int, index: int) -> int:
+        """Build an array-select expression: result = base[index]."""
+        return self._lib.builder_expr_array_select(
+            self._b,
+            ctypes.c_uint32(base_var_id),
+            ctypes.c_uint32(n_elems),
+            ctypes.c_uint32(result),
+            ctypes.c_uint32(index),
+        )
+
     def expr_sum(self, result: int, var_refs: list) -> int:
         """Build an N-ary sum expression: result == sum of var_refs[]."""
         n = len(var_refs)

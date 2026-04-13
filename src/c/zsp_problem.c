@@ -203,6 +203,20 @@ ExprRef expr_concat(SolveProblem *sp, ExprRef hi, ExprRef lo,
     return ref;
 }
 
+ExprRef expr_array_select(SolveProblem *sp, uint32_t base_var_id,
+                          uint32_t n_elems, ExprRef result, ExprRef index) {
+    ExprRef ref = _pool_alloc(sp, (uint32_t)sizeof(ExprArraySelect),
+                              (uint32_t)_Alignof(ExprArraySelect));
+    if (ref == EXPR_NULL) return EXPR_NULL;
+    ExprArraySelect *n = (ExprArraySelect *)POOL_PTR(sp, ref);
+    n->kind        = EXPR_ARRAY_SELECT;
+    n->base_var_id = base_var_id;
+    n->n_elems     = n_elems;
+    n->result      = result;
+    n->index       = index;
+    return ref;
+}
+
 ExprRef expr_sum(SolveProblem *sp, ExprRef result,
                  uint32_t n_vars, const ExprRef *var_refs) {
     uint32_t total = (uint32_t)sizeof(ExprSum) + n_vars * (uint32_t)sizeof(ExprRef);

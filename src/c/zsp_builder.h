@@ -148,6 +148,10 @@ ExprRef builder_expr_extract(SolveProblemBuilder *b, ExprRef operand,
 ExprRef builder_expr_concat(SolveProblemBuilder *b, ExprRef hi,
                            ExprRef lo, uint8_t lo_width);
 
+/** Build an array-select expression: result = base[index]. */
+ExprRef builder_expr_array_select(SolveProblemBuilder *b, uint32_t base_var_id,
+                                   uint32_t n_elems, ExprRef result, ExprRef index);
+
 /** Build an N-ary sum expression. var_refs[] are ExprRef for summand vars. */
 ExprRef builder_expr_sum(SolveProblemBuilder *b, ExprRef result,
                          uint32_t n_vars, const ExprRef *var_refs);

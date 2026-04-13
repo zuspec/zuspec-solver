@@ -408,6 +408,23 @@ ExprRef builder_expr_concat(SolveProblemBuilder *b, ExprRef hi,
     return ref;
 }
 
+ExprRef builder_expr_array_select(SolveProblemBuilder *b, uint32_t base_var_id,
+                                   uint32_t n_elems, ExprRef result, ExprRef index) {
+    ExprRef ref = builder_alloc(b, (uint32_t)sizeof(ExprArraySelect),
+                                (uint32_t)_Alignof(ExprArraySelect));
+    if (ref == EXPR_NULL) return EXPR_NULL;
+
+    uint32_t voff = ref - POOL_HEADER_SZ;
+    uint32_t local = voff - b->current->base_offset;
+    ExprArraySelect *n = (ExprArraySelect *)_block_ptr_at(b->current, local);
+    n->kind        = EXPR_ARRAY_SELECT;
+    n->base_var_id = base_var_id;
+    n->n_elems     = n_elems;
+    n->result      = result;
+    n->index       = index;
+    return ref;
+}
+
 ExprRef builder_expr_sum(SolveProblemBuilder *b, ExprRef result,
                          uint32_t n_vars, const ExprRef *var_refs) {
     uint32_t total = (uint32_t)sizeof(ExprSum) + n_vars * (uint32_t)sizeof(ExprRef);

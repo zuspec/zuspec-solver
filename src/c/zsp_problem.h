@@ -32,6 +32,7 @@ typedef enum {
     EXPR_SUM      = 10, /* n-ary sum: r == v0+v1+...+vN */
     EXPR_COUNTONES = 11, /* popcount: r == countones(x)  */
     EXPR_CLOG2    = 12, /* r == ceil(log2(x))           */
+    EXPR_ARRAY_SELECT = 13, /* r = base[index]              */
 } ExprKind;
 
 /* ------------------------------------------------------------------ */
@@ -171,6 +172,17 @@ typedef struct {
     ExprRef  result;     /* result variable ExprRef  */
     ExprRef  operand;    /* input variable ExprRef   */
 } ExprClog2;
+
+/** Array element select: result = base_var[index].
+ *  Elements are contiguous variables: base_var_id .. base_var_id+n_elems-1.
+ *  The compiler lowers this into an ITE chain for small n_elems. */
+typedef struct {
+    ExprKind kind;          /* EXPR_ARRAY_SELECT         */
+    uint32_t base_var_id;   /* first element variable ID */
+    uint32_t n_elems;       /* number of elements        */
+    ExprRef  result;        /* result variable ExprRef   */
+    ExprRef  index;         /* index expression ExprRef  */
+} ExprArraySelect;
 
 /* ------------------------------------------------------------------ */
 /* Variable / Constraint / Source specifications                       */
@@ -358,6 +370,14 @@ ExprRef expr_countones(SolveProblem *sp, ExprRef result, ExprRef operand);
 
 /** Build a clog2 expression: result == ceil(log2(operand)). */
 ExprRef expr_clog2(SolveProblem *sp, ExprRef result, ExprRef operand);
+
+/** Build an array-select expression: result = base[index].
+ *  @param base_var_id  First element variable ID (elements are contiguous).
+ *  @param n_elems      Number of array elements.
+ *  @param result       ExprRef for the result variable.
+ *  @param index        ExprRef for the index expression. */
+ExprRef expr_array_select(SolveProblem *sp, uint32_t base_var_id,
+                          uint32_t n_elems, ExprRef result, ExprRef index);
 
 /* ------------------------------------------------------------------ */
 /* Problem builders                                                    */

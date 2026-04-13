@@ -477,7 +477,7 @@ For arrays of structs: each element's fields get their own variable IDs.
 
 ## Implementation Sprints
 
-### Sprint T1: SumEq Propagator + solver_add_array_vars (Week 1)
+### Sprint T1: SumEq Propagator + solver_add_array_vars (Week 1) ✓ DONE
 
 **Files to change:**
 
@@ -508,7 +508,7 @@ For arrays of structs: each element's fields get their own variable IDs.
   - `test_add_array_vars_with_constraints`: Add vars + element constraints, solve.
   - `test_add_array_vars_overflow`: Exceed capacity, verify -1 return.
 
-### Sprint T2: Countones + Clog2 Propagators (Week 2)
+### Sprint T2: Countones + Clog2 Propagators (Week 2) ✓ DONE
 
 **Files to change:**
 

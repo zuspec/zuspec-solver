@@ -47,6 +47,7 @@ EXPR_CONCAT = 9
 EXPR_SUM = 10
 EXPR_COUNTONES = 11
 EXPR_CLOG2 = 12
+EXPR_ARRAY_SELECT = 13
 
 # Default buffer size for a SolveProblem (64 KiB)
 _SP_BUF_SIZE = 65536

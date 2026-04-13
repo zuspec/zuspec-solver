@@ -823,6 +823,62 @@ static int _compile_constraint(SolveCtx *ctx, SolveProblem *sp, ExprRef root) {
         }
     }
 
+    /* ---- EXPR_ARRAY_SELECT: result = base[index] ---- */
+    if (k == EXPR_ARRAY_SELECT) {
+        ExprArraySelect *as = (ExprArraySelect *)zsp_pool_ptr(&sp->pool, root);
+        uint32_t r_id, idx_id;
+        if (!_is_var(sp, as->result, &r_id)) return 0;
+        if (!_is_var(sp, as->index, &idx_id)) return 0;
+        uint32_t base = as->base_var_id;
+        uint32_t n = as->n_elems;
+
+        if (n == 0) return 1;  /* empty array: vacuously true */
+        if (n > 64) return 0;  /* too large for ITE chain */
+
+        /* Tighten index to [0, n-1] */
+        if (ctx_tighten_lb64(ctx, idx_id, 0) == PROP_CONFLICT) return -1;
+        if (ctx_tighten_ub64(ctx, idx_id, (int64_t)(n - 1)) == PROP_CONFLICT) return -1;
+
+        /* For each element i, create: guard_i ↔ (idx == i), then
+         * guard_i → (result == base[i]).
+         * Uses ReificationEq for the guard link and bounds_eq for the
+         * conditional equality. */
+        for (uint32_t i = 0; i < n; i++) {
+            uint32_t elem_id = base + i;
+            if (elem_id >= ctx->n_vars_capacity) return 0;
+
+            /* Create guard variable [0,1] */
+            if (ctx->n_vars >= ctx->n_vars_capacity) return 0;
+            uint32_t gid = ctx->n_vars;
+            Variable *gv = &ctx->vars[gid];
+            _init_tier0(gv, 1, 0, 0, 1);
+            ctx->n_vars = gid + 1;
+            if (ctx->watcher_heads) ctx->watcher_heads[gid] = EXPR_NULL;
+            if (gid < 64) ctx->unassigned_mask |= (1ULL << gid);
+
+            /* Create const-var for index value i */
+            if (ctx->n_vars >= ctx->n_vars_capacity) return 0;
+            uint32_t cv_id = ctx->n_vars;
+            Variable *cvv = &ctx->vars[cv_id];
+            _init_tier0(cvv, 32, 0, (int64_t)i, (int64_t)i);
+            ctx->n_vars = cv_id + 1;
+            if (ctx->watcher_heads) ctx->watcher_heads[cv_id] = EXPR_NULL;
+
+            /* guard ↔ (idx == i) */
+            prop_add_reification_eq_32(ctx, gid, idx_id, cv_id, 0);
+
+            /* guard → (result == base[i]): guard-gated EQ propagator */
+            uint32_t props_before = ctx->n_props;
+            prop_add_bounds_eq_32(ctx, r_id, elem_id, 0);
+            /* Gate the EQ propagator with the guard */
+            for (uint32_t pi = props_before; pi < ctx->n_props; pi++) {
+                if (ctx->prop_guard_vars && pi < ctx->n_prop_refs_capacity)
+                    ctx->prop_guard_vars[pi] = gid;
+            }
+        }
+        return 1;
+    }
+
     /* ---- EXPR_SUM: result == sum of var_ids[] ---- */
     if (k == EXPR_SUM) {
         ExprSum *es = (ExprSum *)zsp_pool_ptr(&sp->pool, root);

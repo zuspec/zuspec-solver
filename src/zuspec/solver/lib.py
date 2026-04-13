@@ -254,6 +254,10 @@ def _wire_builder_argtypes(lib: ctypes.CDLL) -> None:
     lib.builder_add_all_different.restype  = c.c_uint32
     lib.builder_add_all_different.argtypes = [c.c_void_p, c.c_uint32, c.c_void_p]
 
+    lib.builder_expr_array_select.restype  = c.c_uint32
+    lib.builder_expr_array_select.argtypes = [c.c_void_p, c.c_uint32,
+                                              c.c_uint32, c.c_uint32, c.c_uint32]
+
     lib.builder_expr_sum.restype  = c.c_uint32
     lib.builder_expr_sum.argtypes = [c.c_void_p, c.c_uint32,
                                      c.c_uint32, c.c_void_p]
