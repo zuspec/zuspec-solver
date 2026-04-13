@@ -170,6 +170,10 @@ typedef struct {
 typedef struct { Propagator hdr; PropWatchSect ws; } Reification_32_t;
 typedef struct { Propagator hdr; PropWatchSect ws; } Reification_64_t;
 
+/* ReificationEq: guard ↔ (x == y), var_ids[0]=guard, [1]=x, [2]=y */
+typedef struct { Propagator hdr; PropWatchSect ws; } ReificationEq_32_t;
+
+
 /* BitSlice_32: r = a[hi_bit:lo_bit]  var_ids[0]=r, var_ids[1]=a */
 typedef struct {
     Propagator  hdr;
@@ -325,6 +329,10 @@ uint32_t prop_add_reification_32(SolveCtx *ctx, uint32_t guard_id,
 uint32_t prop_add_reification_64(SolveCtx *ctx, uint32_t guard_id,
                                    uint32_t x_id, uint32_t y_id,
                                    uint8_t priority);
+
+uint32_t prop_add_reification_eq_32(SolveCtx *ctx, uint32_t guard_id,
+                                     uint32_t x_id, uint32_t y_id,
+                                     uint8_t priority);
 
 uint32_t prop_add_bit_slice_32(SolveCtx *ctx, uint32_t r_id, uint32_t a_id,
                                 uint8_t hi_bit, uint8_t lo_bit, uint8_t priority);
