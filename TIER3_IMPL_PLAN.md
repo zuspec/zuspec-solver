@@ -542,7 +542,7 @@ For arrays of structs: each element's fields get their own variable IDs.
   - `test_clog2_one`: x=1, r=0.
   - `test_clog2_with_equality`: r == clog2(x), x in [1, 255]. Solve, verify.
 
-### Sprint T3: ArraySelect + Integration Layer Helpers (Week 3)
+### Sprint T3: ArraySelect + Integration Layer Helpers (Week 3) ✓ DONE
 
 **Files to change:**
 
@@ -563,7 +563,7 @@ For arrays of structs: each element's fields get their own variable IDs.
   - `test_select_with_constraint`: r == arr[idx], r > 10. Verify valid.
   - `test_select_out_of_bounds`: idx constrained beyond array size. UNSAT or handled gracefully.
 
-### Sprint T4: Reduction Unrolling + Dynamic Array Protocol (Week 4)
+### Sprint T4: Reduction Unrolling + Dynamic Array Protocol (Week 4) ✓ DONE
 
 This sprint focuses on the integration layer, not the solver core.
 
@@ -596,7 +596,7 @@ This sprint focuses on the integration layer, not the solver core.
   - `test_dyn_size_inline`: mirrors `t_constraint_dyn_size_inline.v`.
   - `test_foreach_classref`: mirrors `t_constraint_foreach_classref.v` (per-element field constraints).
 
-### Sprint T5: Integration Tests + Benchmarks (Week 5)
+### Sprint T5: Integration Tests + Benchmarks (Week 5) ✓ DONE
 
 **Tests:**
 - `tests/integration/test_verilator_sysfunc.py`:
