@@ -227,6 +227,70 @@ static int _flatten_or(SolveProblem *sp, ExprRef ref,
     return -1;  /* not a var-const comparison */
 }
 
+/* Forward declaration */
+static int _compile_constraint(SolveCtx *ctx, SolveProblem *sp, ExprRef root);
+
+/* Helper: compile a constraint body in a guard-gated context.
+ * Unlike _compile_constraint, this avoids compile-time bound tightening for
+ * var-const patterns (which is irreversible and can't be gated). Instead,
+ * it uses Implication propagators for var-const EQ/LTE/GTE. */
+static int _compile_gated_constraint(SolveCtx *ctx, SolveProblem *sp,
+                                      ExprRef root, uint32_t guard_id) {
+    if (root == EXPR_NULL) return 1;
+
+    ExprKind k = *(ExprKind *)zsp_pool_ptr(&sp->pool, root);
+    if (k == EXPR_BINARY) {
+        ExprBinary *e = (ExprBinary *)zsp_pool_ptr(&sp->pool, root);
+        uint32_t vid; int64_t cv;
+        int is_vc = _is_var(sp, e->lhs, &vid) && _is_const(sp, e->rhs, &cv);
+        int is_cv = !is_vc && _is_const(sp, e->lhs, &cv) && _is_var(sp, e->rhs, &vid);
+
+        if (is_vc || is_cv) {
+            BinOp op = e->op;
+            if (is_cv) {
+                switch (op) {
+                case BIN_LT:  op = BIN_GT;  break;
+                case BIN_LTE: op = BIN_GTE; break;
+                case BIN_GT:  op = BIN_LT;  break;
+                case BIN_GTE: op = BIN_LTE; break;
+                default: break;
+                }
+            }
+            /* Use Implication propagators gated by guard_id */
+            switch (op) {
+            case BIN_EQ:
+                prop_add_implication_32(ctx, guard_id, vid, (int32_t)cv, 1, 0);
+                prop_add_implication_32(ctx, guard_id, vid, (int32_t)cv, 0, 0);
+                return 1;
+            case BIN_LTE:
+                prop_add_implication_32(ctx, guard_id, vid, (int32_t)cv, 1, 0);
+                return 1;
+            case BIN_LT:
+                prop_add_implication_32(ctx, guard_id, vid, (int32_t)(cv - 1), 1, 0);
+                return 1;
+            case BIN_GTE:
+                prop_add_implication_32(ctx, guard_id, vid, (int32_t)cv, 0, 0);
+                return 1;
+            case BIN_GT:
+                prop_add_implication_32(ctx, guard_id, vid, (int32_t)(cv + 1), 0, 0);
+                return 1;
+            default: break;
+            }
+        }
+    }
+
+    /* Fallback: compile normally and gate resulting propagators */
+    uint32_t props_before = ctx->n_props;
+    int rc = _compile_constraint(ctx, sp, root);
+    if (rc > 0) {
+        for (uint32_t pi = props_before; pi < ctx->n_props; pi++) {
+            if (ctx->prop_guard_vars && pi < ctx->n_prop_refs_capacity)
+                ctx->prop_guard_vars[pi] = guard_id;
+        }
+    }
+    return rc;
+}
+
 /* Helper: compile r_id == BinaryExpr(expr_ref) without allocating in sp pool.
  * Used when the sp pool may be full (e.g. after builder finalization). */
 static int _compile_binexpr_eq_var(SolveCtx *ctx, SolveProblem *sp,
@@ -589,24 +653,76 @@ static int _compile_constraint(SolveCtx *ctx, SolveProblem *sp, ExprRef root) {
                         prop_add_reification_eq_32(ctx, gid, cmp_vid, cv_id, 0);
                     }
 
-                    /* Compile then-branch with guard */
-                    uint32_t props_before = ctx->n_props;
-                    int then_rc = _compile_constraint(ctx, sp, ite->then_e);
+                    /* Compile then-branch with guard (uses gated helper
+                     * to avoid irreversible compile-time tightening) */
+                    int then_rc = _compile_gated_constraint(ctx, sp,
+                                                            ite->then_e, gid);
                     if (then_rc < 0) return then_rc;
-                    if (then_rc > 0) {
-                        for (uint32_t pi = props_before; pi < ctx->n_props; pi++) {
-                            if (ctx->prop_guard_vars && pi < ctx->n_prop_refs_capacity)
-                                ctx->prop_guard_vars[pi] = gid;
-                        }
-                    }
 
-                    /* Else-branch: only handle trivially-true (const 1) */
+                    /* Else-branch */
                     int64_t else_cv2;
                     if (ite->else_e == EXPR_NULL ||
                         (_is_const(sp, ite->else_e, &else_cv2) && else_cv2 != 0)) {
                         /* No else or trivially true else -- done */
                     }
-                    /* Non-trivial else not yet compiled natively */
+
+                    return (then_rc > 0) ? 1 : 0;
+                }
+
+                /* var == var condition: guard <-> (lhs_var == rhs_var) */
+                uint32_t lhs_vid, rhs_vid;
+                int is_vv = _is_var(sp, cmp->lhs, &lhs_vid) &&
+                            _is_var(sp, cmp->rhs, &rhs_vid);
+                if (is_vv && cmp->op == BIN_EQ &&
+                    ctx->n_vars < ctx->n_vars_capacity) {
+                    uint32_t gid = ctx->n_vars;
+                    Variable *gv = &ctx->vars[gid];
+                    gv->lo = 0; gv->hi = 1;
+                    gv->width = 1; gv->flags = 0;
+                    gv->holes_offset = 0; gv->_pad = 0;
+                    ctx->n_vars = gid + 1;
+                    if (ctx->watcher_heads) ctx->watcher_heads[gid] = EXPR_NULL;
+                    if (gid < 64) ctx->unassigned_mask |= (1ULL << gid);
+
+                    /* guard <-> (lhs == rhs) */
+                    prop_add_reification_eq_32(ctx, gid, lhs_vid, rhs_vid, 0);
+
+                    /* Compile then-branch with guard (gated helper) */
+                    int then_rc = _compile_gated_constraint(ctx, sp,
+                                                            ite->then_e, gid);
+                    if (then_rc < 0) return then_rc;
+
+                    /* Handle else-branch */
+                    int64_t else_cv3;
+                    if (ite->else_e != EXPR_NULL &&
+                        !(_is_const(sp, ite->else_e, &else_cv3) && else_cv3 != 0)) {
+                        /* Non-trivial else: compile with not_guard */
+                        if (ctx->n_vars < ctx->n_vars_capacity) {
+                            uint32_t ng_id = ctx->n_vars;
+                            Variable *ngv = &ctx->vars[ng_id];
+                            ngv->lo = 0; ngv->hi = 1;
+                            ngv->width = 1; ngv->flags = 0;
+                            ngv->holes_offset = 0; ngv->_pad = 0;
+                            ctx->n_vars = ng_id + 1;
+                            if (ctx->watcher_heads) ctx->watcher_heads[ng_id] = EXPR_NULL;
+                            if (ng_id < 64) ctx->unassigned_mask |= (1ULL << ng_id);
+
+                            /* not_guard == 1 - guard: use a const-1 var and
+                             * the ADD propagator: guard + not_guard == 1 */
+                            if (ctx->n_vars < ctx->n_vars_capacity) {
+                                uint32_t one_id = ctx->n_vars;
+                                Variable *ov = &ctx->vars[one_id];
+                                _init_tier0(ov, 32, 0, 1, 1);
+                                ctx->n_vars = one_id + 1;
+                                if (ctx->watcher_heads) ctx->watcher_heads[one_id] = EXPR_NULL;
+                                prop_add_bounds_add_32(ctx, one_id, gid, ng_id, 0);
+                            }
+
+                            int else_rc = _compile_gated_constraint(ctx, sp,
+                                                                ite->else_e, ng_id);
+                            (void)else_rc;
+                        }
+                    }
 
                     return (then_rc > 0) ? 1 : 0;
                 }
