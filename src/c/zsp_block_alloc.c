@@ -44,7 +44,10 @@ struct zsp_block_alloc_s {
 zsp_block_alloc_t *zsp_block_alloc_create(zsp_alloc_t *alloc, size_t block_size) {
     if (!alloc) alloc = &zsp_malloc_alloc;
 
-    /* block_size must hold at least a pointer for the free-list node */
+    /* Use a reasonable default block size if 0 is given.
+     * Block must be large enough for the header + useful data. */
+    if (block_size == 0)
+        block_size = 4096;
     if (block_size < sizeof(_free_node_t))
         block_size = sizeof(_free_node_t);
 

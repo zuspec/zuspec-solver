@@ -87,7 +87,12 @@ class SolveCtx:
         self._ctx = ctx  # c_void_p value
 
         # Compile constraints from the problem into this context.
-        rc = lib.solver_compile(self._ctx, problem._sp)
+        # Accept either SolveProblem (has _sp) or raw ctypes buffer
+        sp_ptr = getattr(problem, "_sp", None)
+        if sp_ptr is None:
+            # Raw ctypes buffer -- cast to void pointer
+            sp_ptr = ctypes.cast(problem, ctypes.c_void_p).value
+        rc = lib.solver_compile(self._ctx, sp_ptr)
         if rc == -2:
             lib.zsp_block_alloc_destroy(self._ba)
             raise CompileUnsatError("Domain became empty during compile-time bound tightening")
@@ -137,6 +142,33 @@ class SolveCtx:
             max_shave_iters=max_shave_iters,
         )
         return self._lib.solver_solve(self._ctx, ctypes.byref(opts))
+
+
+    def add_constraint(self, aux_problem) -> int:
+        """Add constraints from an auxiliary SolveProblem to this context.
+
+        Returns 0 on success, -1 if capacity exceeded, -2 if UNSAT.
+        """
+        sp_ptr = getattr(aux_problem, "_sp", None)
+        if sp_ptr is None:
+            sp_ptr = ctypes.cast(aux_problem, ctypes.c_void_p).value
+        return self._lib.solver_add_constraint(self._ctx, sp_ptr)
+
+    def checkpoint(self) -> int:
+        """Save solver state; returns checkpoint index."""
+        return self._lib.solver_checkpoint(self._ctx)
+
+    def restore(self, cp: int) -> None:
+        """Restore solver state to checkpoint *cp*."""
+        self._lib.solver_restore(self._ctx, ctypes.c_uint32(cp))
+
+    def propagate_only(self) -> int:
+        """Run propagation to fixpoint without search.
+
+        Returns PROP_OK (0) on fixpoint, PROP_CONFLICT (1) if UNSAT.
+        Useful for fast feasibility checks without full solve.
+        """
+        return self._lib.solver_propagate_only(self._ctx)
 
     def get_value(self, var_id: int) -> int:
         """Return assigned value for var_id after a successful solve."""

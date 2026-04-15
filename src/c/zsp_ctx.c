@@ -24,6 +24,7 @@ SolveCtx *solver_create(void *static_buf, size_t static_size,
     SolveCtx *ctx        = (SolveCtx *)static_buf;
     ctx->vars            = NULL;
     ctx->n_vars          = 0;
+    ctx->n_vars_capacity = 0;
     ctx->decision_level  = 0;
     ctx->trail_count     = 0;
     ctx->conflict_count  = 0;
@@ -35,9 +36,18 @@ SolveCtx *solver_create(void *static_buf, size_t static_size,
     ctx->max_depth       = 0;
     ctx->n_props         = 0;
     ctx->watcher_heads   = NULL;
+    ctx->n_checkpoints   = 0;
+    ctx->prop_refs       = NULL;
+    ctx->n_prop_refs_capacity = 0;
     ctx->decisions       = NULL;
     ctx->phase_save      = NULL;
+    ctx->unassigned_mask = 0;
+    ctx->assumption_var_ids = NULL;
+    ctx->assumption_priorities = NULL;
+    ctx->n_assumptions   = 0;
+    ctx->assumption_active_mask = 0;
     ctx->_pad            = 0;
+    ctx->var_alias       = NULL;
 
     /* Init PropQueue — all levels empty */
     ctx->queue.non_empty_mask = 0;

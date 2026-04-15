@@ -195,8 +195,8 @@ class TestVariable:
 
     # -- tier-0: var_lo64 widens correctly  ------------------------ #
 
-    def test_tier0_lo64_unsigned_widening(self):
-        """var_lo64 on an unsigned tier-0 var should zero-extend."""
+    def test_unsigned_32_lo64(self):
+        """var_lo64 on an unsigned 32-bit var (promoted to tier-1)."""
         sp, sp_buf = _make_sp(self.lib)
         self.lib.problem_add_var(sp, 0, 32, 0, 0, 2**32 - 1)
         ctx, ctx_buf = _make_ctx(self.lib)
@@ -332,7 +332,7 @@ class TestVariable:
         """Tier-1 variables need extra pool space for WideBounds64."""
         sp0, buf0 = _make_sp(self.lib)
         sp1, buf1 = _make_sp(self.lib)
-        self.lib.problem_add_var(sp0, 0, 32, 0, 0, 100)  # tier-0
+        self.lib.problem_add_var(sp0, 0, 32, 1, 0, 100)  # tier-0 (signed)
         self.lib.problem_add_var(sp1, 0, 64, 0, 0, 100)  # tier-1
 
         ctx0, cbuf0 = _make_ctx(self.lib)

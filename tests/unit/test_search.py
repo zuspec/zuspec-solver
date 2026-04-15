@@ -60,6 +60,10 @@ def _setup(lib: ctypes.CDLL):
     lib.zsp_var_lo32.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
     lib.zsp_var_hi32.restype  = ctypes.c_int32
     lib.zsp_var_hi32.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    lib.zsp_var_lo64.restype  = ctypes.c_int64
+    lib.zsp_var_lo64.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    lib.zsp_var_hi64.restype  = ctypes.c_int64
+    lib.zsp_var_hi64.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
 
     lib.prop_add_bounds_add_32.restype  = ctypes.c_uint32
     lib.prop_add_bounds_add_32.argtypes = [ctypes.c_void_p, ctypes.c_uint32,
@@ -93,7 +97,7 @@ def _setup(lib: ctypes.CDLL):
     lib.solver_solve.restype  = ctypes.c_int
     lib.solver_solve.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 
-    lib.solver_get_value.restype  = ctypes.c_int32
+    lib.solver_get_value.restype  = ctypes.c_int64
     lib.solver_get_value.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
 
 
@@ -150,8 +154,8 @@ def test_unconstrained_two_vars(libzsp):
     _setup(lib)
 
     sp_buf, ctx_buf, ba, sp, ctx = _make_ctx(lib, [
-        (32, 0, 0, 9),   # x in [0,9]
-        (32, 0, 0, 9),   # y in [0,9]
+        (32, 1, 0, 9),   # x in [0,9]
+        (32, 1, 0, 9),   # y in [0,9]
     ])
 
     rc = _solve(lib, ctx)
@@ -173,9 +177,9 @@ def test_add_constraint_x_plus_y_eq_7(libzsp):
     # vars: r=result of x+y, x, y
     # constraint: r == 7 AND r = x + y
     sp_buf, ctx_buf, ba, sp, ctx = _make_ctx(lib, [
-        (32, 0, 0, 20),  # 0: r = x+y
-        (32, 0, 0, 10),  # 1: x
-        (32, 0, 0, 10),  # 2: y
+        (32, 1, 0, 20),  # 0: r = x+y
+        (32, 1, 0, 10),  # 1: x
+        (32, 1, 0, 10),  # 2: y
     ])
 
     # Add propagator: r = x + y
@@ -206,7 +210,7 @@ def test_unsatisfiable(libzsp):
     _setup(lib)
 
     sp_buf, ctx_buf, ba, sp, ctx = _make_ctx(lib, [
-        (32, 0, 0, 10),  # x in [0,10]
+        (32, 1, 0, 10),  # x in [0,10]
     ])
 
     # Impose conflicting bounds before solve
@@ -226,8 +230,8 @@ def test_restart_fires_and_finds_solution(libzsp):
     _setup(lib)
 
     sp_buf, ctx_buf, ba, sp, ctx = _make_ctx(lib, [
-        (32, 0, 0, 9),
-        (32, 0, 0, 9),
+        (32, 1, 0, 9),
+        (32, 1, 0, 9),
     ])
 
     # Very low conflict budget → many restarts; max_restarts=0 means unlimited
@@ -252,9 +256,9 @@ def test_seeded_reproducible(libzsp):
 
     def run_with_seed(seed):
         sp_buf, ctx_buf, ba, sp, ctx = _make_ctx(lib, [
-            (32, 0, 0, 99),
-            (32, 0, 0, 99),
-            (32, 0, 0, 99),
+            (32, 1, 0, 99),
+            (32, 1, 0, 99),
+            (32, 1, 0, 99),
         ])
         rc = _solve(lib, ctx, seed=seed)
         assert rc == SOLVE_OK
@@ -275,7 +279,7 @@ def test_different_seeds_different_values(libzsp):
     results = set()
     for seed in range(1, 9):
         sp_buf, ctx_buf, ba, sp, ctx = _make_ctx(lib, [
-            (32, 0, 0, 99),
+            (32, 1, 0, 99),
         ])
         rc = _solve(lib, ctx, seed=seed * 0x1111111111111111)
         assert rc == SOLVE_OK
@@ -297,7 +301,7 @@ def test_randc_all_values_seen(libzsp):
         # Use a wide spread of seeds to exercise the full domain
         seed = (i + 1) * 0x9E3779B97F4A7C15  # Fibonacci hashing multiplier
         sp_buf, ctx_buf, ba, sp, ctx = _make_ctx(lib, [
-            (32, 0, 0, 3),   # x in {0,1,2,3}
+            (32, 1, 0, 3),   # x in {0,1,2,3}
         ])
         rc = _solve(lib, ctx, seed=seed)
         assert rc == SOLVE_OK

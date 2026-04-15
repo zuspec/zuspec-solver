@@ -90,3 +90,19 @@ struct S_c {
 
 
 The Zuspec Solver project contains several solver engines used 
+---
+
+## DPI Integration
+
+The solver can be called from SystemVerilog testbenches via DPI-C.
+A Python code generator produces SV classes with an embedded constraint
+problem; the native solver runs at simulation time.
+
+See [docs/dpi_integration.md](docs/dpi_integration.md) for the full guide.
+
+## SolveProblemBuilder
+
+A growable alternative to the fixed-size `SolveProblem` API that never
+overflows.  Used internally by `IRTranslator` and the DPI code generator.
+
+See [docs/builder_api.md](docs/builder_api.md) for the API reference.

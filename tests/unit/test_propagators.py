@@ -71,6 +71,10 @@ def _setup(lib: ctypes.CDLL):
     lib.zsp_var_lo32.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
     lib.zsp_var_hi32.restype  = ctypes.c_int32
     lib.zsp_var_hi32.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    lib.zsp_var_lo64.restype  = ctypes.c_int64
+    lib.zsp_var_lo64.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    lib.zsp_var_hi64.restype  = ctypes.c_int64
+    lib.zsp_var_hi64.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
 
     # trail helpers used to fix variable bounds
     lib.trail_record_lb.restype  = ctypes.c_int
@@ -157,11 +161,11 @@ def _make_problem_and_ctx(lib, var_specs):
 
 
 def _lo(lib, ctx, var_id):
-    return lib.zsp_var_lo32(ctx, var_id)
+    return lib.zsp_var_lo64(ctx, var_id)
 
 
 def _hi(lib, ctx, var_id):
-    return lib.zsp_var_hi32(ctx, var_id)
+    return lib.zsp_var_hi64(ctx, var_id)
 
 
 def _fix(lib, ctx, var_id, val):
@@ -181,9 +185,9 @@ def test_bounds_add_32_propagates(libzsp):
 
     # vars: r=[0,100], a=[0,100], b=[0,100]
     sp_buf, ctx_buf, ba, sp, ctx = _make_problem_and_ctx(lib, [
-        (32, 0, 0, 100),  # 0: r
-        (32, 0, 0, 100),  # 1: a
-        (32, 0, 0, 100),  # 2: b
+        (32, 1, 0, 100),  # 0: r
+        (32, 1, 0, 100),  # 1: a
+        (32, 1, 0, 100),  # 2: b
     ])
 
     ref = lib.prop_add_bounds_add_32(ctx, 0, 1, 2, 0)
@@ -219,8 +223,8 @@ def test_bounds_le_32_propagates(libzsp):
     _setup(lib)
 
     sp_buf, ctx_buf, ba, sp, ctx = _make_problem_and_ctx(lib, [
-        (32, 0, 0, 100),  # 0: x
-        (32, 0, 0, 100),  # 1: y
+        (32, 1, 0, 100),  # 0: x
+        (32, 1, 0, 100),  # 1: y
     ])
 
     ref = lib.prop_add_bounds_le_32(ctx, 0, 1, 0)
@@ -246,8 +250,8 @@ def test_bounds_lt_32_propagates(libzsp):
     _setup(lib)
 
     sp_buf, ctx_buf, ba, sp, ctx = _make_problem_and_ctx(lib, [
-        (32, 0, 0, 100),  # 0: x
-        (32, 0, 0, 100),  # 1: y
+        (32, 1, 0, 100),  # 0: x
+        (32, 1, 0, 100),  # 1: y
     ])
 
     ref = lib.prop_add_bounds_lt_32(ctx, 0, 1, 0)
@@ -270,8 +274,8 @@ def test_bounds_eq_32_propagates(libzsp):
     _setup(lib)
 
     sp_buf, ctx_buf, ba, sp, ctx = _make_problem_and_ctx(lib, [
-        (32, 0, 0, 100),  # 0: x
-        (32, 0, 0, 100),  # 1: y
+        (32, 1, 0, 100),  # 0: x
+        (32, 1, 0, 100),  # 1: y
     ])
 
     ref = lib.prop_add_bounds_eq_32(ctx, 0, 1, 0)
@@ -298,8 +302,8 @@ def test_bounds_ne_32_singleton_conflict(libzsp):
     _setup(lib)
 
     sp_buf, ctx_buf, ba, sp, ctx = _make_problem_and_ctx(lib, [
-        (32, 0, 5, 5),  # 0: x fixed at 5
-        (32, 0, 5, 5),  # 1: y fixed at 5
+        (32, 1, 5, 5),  # 0: x fixed at 5
+        (32, 1, 5, 5),  # 1: y fixed at 5
     ])
 
     ref = lib.prop_add_bounds_ne_32(ctx, 0, 1, 0)
@@ -342,7 +346,7 @@ def test_in_set_32(libzsp):
     _setup(lib)
 
     sp_buf, ctx_buf, ba, sp, ctx = _make_problem_and_ctx(lib, [
-        (32, 0, 0, 20),   # 0: x
+        (32, 1, 0, 20),   # 0: x
     ])
 
     elems = (ctypes.c_int32 * 3)(2, 5, 9)
@@ -365,7 +369,7 @@ def test_in_set_32_conflict(libzsp):
     _setup(lib)
 
     sp_buf, ctx_buf, ba, sp, ctx = _make_problem_and_ctx(lib, [
-        (32, 0, 15, 20),   # 0: x
+        (32, 1, 15, 20),   # 0: x
     ])
 
     elems = (ctypes.c_int32 * 3)(2, 5, 9)
@@ -384,8 +388,8 @@ def test_implication_32_ub_fires_when_guard_true(libzsp):
     _setup(lib)
 
     sp_buf, ctx_buf, ba, sp, ctx = _make_problem_and_ctx(lib, [
-        (32, 0, 0,  1),   # 0: guard (boolean)
-        (32, 0, 0, 10),   # 1: a
+        (32, 1, 0,  1),   # 0: guard (boolean)
+        (32, 1, 0, 10),   # 1: a
     ])
 
     ref = lib.prop_add_implication_32(ctx, 0, 1, 3, 1, 0)  # is_ub=1
@@ -408,8 +412,8 @@ def test_implication_32_entailed_when_guard_false(libzsp):
     _setup(lib)
 
     sp_buf, ctx_buf, ba, sp, ctx = _make_problem_and_ctx(lib, [
-        (32, 0, 0,  1),   # 0: guard
-        (32, 0, 0, 10),   # 1: a
+        (32, 1, 0,  1),   # 0: guard
+        (32, 1, 0, 10),   # 1: a
     ])
 
     ref = lib.prop_add_implication_32(ctx, 0, 1, 3, 1, 0)
@@ -434,7 +438,7 @@ def test_conflict_empty_domain(libzsp):
     _setup(lib)
 
     sp_buf, ctx_buf, ba, sp, ctx = _make_problem_and_ctx(lib, [
-        (32, 0, 0, 5),   # 0: x in [0,5]
+        (32, 1, 0, 5),   # 0: x in [0,5]
     ])
 
     # Force lb past hi — should return CONFLICT immediately
@@ -456,9 +460,9 @@ def test_priority_queue_ordering(libzsp):
     _setup(lib)
 
     sp_buf, ctx_buf, ba, sp, ctx = _make_problem_and_ctx(lib, [
-        (32, 0,  0, 100),  # 0: x
-        (32, 0,  5,   5),  # 1: y = 5
-        (32, 0, 10,  10),  # 2: z = 10
+        (32, 1,  0, 100),  # 0: x
+        (32, 1,  5,   5),  # 1: y = 5
+        (32, 1, 10,  10),  # 2: z = 10
     ])
 
     # high-priority propagator
@@ -485,10 +489,10 @@ def test_chained_propagators(libzsp):
     _setup(lib)
 
     sp_buf, ctx_buf, ba, sp, ctx = _make_problem_and_ctx(lib, [
-        (32, 0, 0, 100),  # 0: r
-        (32, 0, 3,   3),  # 1: a = 3
-        (32, 0, 3,   3),  # 2: b = 3
-        (32, 0, 0, 100),  # 3: z
+        (32, 1, 0, 100),  # 0: r
+        (32, 1, 3,   3),  # 1: a = 3
+        (32, 1, 3,   3),  # 2: b = 3
+        (32, 1, 0, 100),  # 3: z
     ])
 
     r1 = lib.prop_add_bounds_add_32(ctx, 0, 1, 2, 0)
@@ -513,8 +517,8 @@ def test_watcher_re_enqueues_on_tighten(libzsp):
     _setup(lib)
 
     sp_buf, ctx_buf, ba, sp, ctx = _make_problem_and_ctx(lib, [
-        (32, 0, 0, 100),  # 0: x
-        (32, 0, 0, 100),  # 1: y
+        (32, 1, 0, 100),  # 0: x
+        (32, 1, 0, 100),  # 1: y
     ])
 
     # Add BoundsLE: x ≤ y

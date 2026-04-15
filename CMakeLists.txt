@@ -13,6 +13,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 set(ZSP_SOURCES
     src/c/zsp_block_alloc.c
+    src/c/zsp_builder.c
     src/c/zsp_compile.c
     src/c/zsp_conflict.c
     src/c/zsp_ctx.c
@@ -24,6 +25,7 @@ set(ZSP_SOURCES
     src/c/zsp_search.c
     src/c/zsp_shave.c
     src/c/zsp_stack.c
+    src/c/zsp_checkpoint.c
     src/c/zsp_trail.c
 )
 
@@ -48,5 +50,25 @@ endif()
 # ------------------------------------------------------------------ #
 
 install(TARGETS zsp_solver
+    LIBRARY DESTINATION lib
+)
+
+# ------------------------------------------------------------------ #
+# DPI shared library target                                            #
+# ------------------------------------------------------------------ #
+
+add_library(zsp_solver_dpi SHARED
+    src/c/zsp_dpi.c
+    ${ZSP_SOURCES}
+)
+
+target_include_directories(zsp_solver_dpi PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/c>
+)
+
+# Use the compat header (no simulator SDK needed at build time)
+target_compile_definitions(zsp_solver_dpi PRIVATE)
+
+install(TARGETS zsp_solver_dpi
     LIBRARY DESTINATION lib
 )

@@ -58,6 +58,11 @@ static uint32_t _alloc_prop(SolveCtx *ctx,
     }
 
     prop_enqueue(ctx, ref);
+
+    /* Record prop ref for checkpoint/restore */
+    if (ctx->prop_refs && p->prop_id < ctx->n_prop_refs_capacity)
+        ctx->prop_refs[p->prop_id] = ref;
+
     return ref;
 }
 
@@ -345,15 +350,50 @@ uint32_t prop_add_bounds_div_32(SolveCtx *ctx, uint32_t r_id, uint32_t a_id,
 static PropResult _fire_bounds_mod_32(Propagator *self, SolveCtx *ctx) {
     PropWatchSect *ws  = PROP_WS(self);
     uint32_t       rid = ws->var_ids[0];
+    uint32_t       aid = ws->var_ids[1];
     uint32_t       bid = ws->var_ids[2];
+    Variable      *r   = &ctx->vars[rid];
+    Variable      *a   = &ctx->vars[aid];
     Variable      *b   = &ctx->vars[bid];
 
     PropResult res;
+
+    /* Forward: tighten r range */
     if (b->lo == b->hi && b->lo > 0) {
         int32_t k = b->lo;
         if ((res = ctx_tighten_lb32(ctx, rid, 0))     != PROP_OK) return res;
         if ((res = ctx_tighten_ub32(ctx, rid, k - 1)) != PROP_OK) return res;
     }
+
+    /* Forward: singleton a and b -> compute r exactly */
+    if (a->lo == a->hi && b->lo == b->hi && b->lo > 0) {
+        int32_t val = a->lo % b->lo;
+        if (val < 0) val += b->lo;
+        if ((res = ctx_tighten_lb32(ctx, rid, val)) != PROP_OK) return res;
+        if ((res = ctx_tighten_ub32(ctx, rid, val)) != PROP_OK) return res;
+    }
+
+    /* Backward: r and b singletons -> constrain a */
+    r = &ctx->vars[rid]; a = &ctx->vars[aid]; b = &ctx->vars[bid];
+    if (r->lo == r->hi && b->lo == b->hi && b->lo > 0) {
+        int32_t r_val = r->lo;
+        int32_t b_val = b->lo;
+        int32_t cur_lo = a->lo;
+        int32_t cur_hi = a->hi;
+
+        int32_t rem = cur_lo % b_val;
+        if (rem < 0) rem += b_val;
+        int32_t new_lo = cur_lo + (int32_t)(((int64_t)r_val - rem + b_val) % b_val);
+        if (new_lo > cur_hi) return PROP_CONFLICT;
+        if ((res = ctx_tighten_lb32(ctx, aid, new_lo)) != PROP_OK) return res;
+
+        rem = cur_hi % b_val;
+        if (rem < 0) rem += b_val;
+        int32_t new_hi = cur_hi - (int32_t)(((int64_t)rem - r_val + b_val) % b_val);
+        if (new_hi < new_lo) return PROP_CONFLICT;
+        if ((res = ctx_tighten_ub32(ctx, aid, new_hi)) != PROP_OK) return res;
+    }
+
     return PROP_OK;
 }
 
@@ -513,6 +553,80 @@ uint32_t prop_add_reification_32(SolveCtx *ctx, uint32_t guard_id,
 }
 
 /* ------------------------------------------------------------------ */
+/* ReificationEq_32: guard <-> (x == y)                                */
+/* ------------------------------------------------------------------ */
+
+static PropResult _fire_reification_eq_32(Propagator *self, SolveCtx *ctx) {
+    PropWatchSect *ws  = PROP_WS(self);
+    uint32_t       gid = ws->var_ids[0];
+    uint32_t       xid = ws->var_ids[1];
+    uint32_t       yid = ws->var_ids[2];
+    Variable      *g   = &ctx->vars[gid];
+    Variable      *x   = &ctx->vars[xid];
+    Variable      *y   = &ctx->vars[yid];
+
+    /* Forward: guard=1 -> enforce x == y (intersect bounds) */
+    if (g->lo == 1) {
+        PropResult r;
+        int32_t new_lo = x->lo > y->lo ? x->lo : y->lo;
+        int32_t new_hi = x->hi < y->hi ? x->hi : y->hi;
+        if (new_lo > new_hi) return PROP_CONFLICT;
+        if ((r = ctx_tighten_lb32(ctx, xid, new_lo)) != PROP_OK) return r;
+        if ((r = ctx_tighten_ub32(ctx, xid, new_hi)) != PROP_OK) return r;
+        if ((r = ctx_tighten_lb32(ctx, yid, new_lo)) != PROP_OK) return r;
+        if ((r = ctx_tighten_ub32(ctx, yid, new_hi)) != PROP_OK) return r;
+    }
+    /* Forward: guard=0 -> x != y. Only propagate when one is singleton. */
+    if (g->hi == 0) {
+        if (x->lo == x->hi && y->lo == x->lo && y->hi == x->hi) {
+            /* Both pinned to same value: conflict */
+            return PROP_CONFLICT;
+        }
+        if (x->lo == x->hi) {
+            /* x is singleton: exclude x->lo from y */
+            if (y->lo == x->lo) {
+                PropResult r;
+                if ((r = ctx_tighten_lb32(ctx, yid, x->lo + 1)) != PROP_OK) return r;
+            }
+            if (y->hi == x->lo) {
+                PropResult r;
+                if ((r = ctx_tighten_ub32(ctx, yid, x->lo - 1)) != PROP_OK) return r;
+            }
+        }
+        if (y->lo == y->hi) {
+            /* y is singleton: exclude y->lo from x */
+            if (x->lo == y->lo) {
+                PropResult r;
+                if ((r = ctx_tighten_lb32(ctx, xid, y->lo + 1)) != PROP_OK) return r;
+            }
+            if (x->hi == y->lo) {
+                PropResult r;
+                if ((r = ctx_tighten_ub32(ctx, xid, y->lo - 1)) != PROP_OK) return r;
+            }
+        }
+    }
+    /* Backward: if x definitely == y (both singletons with same value), guard=1 */
+    if (x->lo == x->hi && y->lo == y->hi && x->lo == y->lo) {
+        PropResult r;
+        if ((r = ctx_tighten_lb32(ctx, gid, 1)) != PROP_OK) return r;
+    }
+    /* Backward: if x and y domains don't overlap, guard=0 */
+    if (x->lo > y->hi || y->lo > x->hi) {
+        PropResult r;
+        if ((r = ctx_tighten_ub32(ctx, gid, 0)) != PROP_OK) return r;
+    }
+    return PROP_OK;
+}
+
+uint32_t prop_add_reification_eq_32(SolveCtx *ctx, uint32_t guard_id,
+                                     uint32_t x_id, uint32_t y_id,
+                                     uint8_t priority) {
+    uint32_t ids[3] = { guard_id, x_id, y_id };
+    return _alloc_prop(ctx, _fire_reification_eq_32, priority, 3, ids,
+                       sizeof(ReificationEq_32_t));
+}
+
+/* ------------------------------------------------------------------ */
 /* BitSlice_32:  r = a[hi_bit:lo_bit]                                 */
 /* ------------------------------------------------------------------ */
 
@@ -649,9 +763,233 @@ uint32_t prop_add_bounds_add_64(SolveCtx *ctx, uint32_t r_id, uint32_t a_id, uin
 
 /* Stubs for Mul/Div/Mod _64 (conservative: no propagation) */
 static PropResult _fire_noop(Propagator *self, SolveCtx *ctx) { (void)self;(void)ctx; return PROP_OK; }
-uint32_t prop_add_bounds_mul_64(SolveCtx *c, uint32_t r, uint32_t a, uint32_t b, uint8_t p) { uint32_t ids[3]={r,a,b}; return _alloc_prop(c,_fire_noop,p,3,ids,sizeof(BoundsMul_64_t)); }
-uint32_t prop_add_bounds_div_64(SolveCtx *c, uint32_t r, uint32_t a, uint32_t b, uint8_t p) { uint32_t ids[3]={r,a,b}; return _alloc_prop(c,_fire_noop,p,3,ids,sizeof(BoundsDiv_64_t)); }
-uint32_t prop_add_bounds_mod_64(SolveCtx *c, uint32_t r, uint32_t a, uint32_t b, uint8_t p) { uint32_t ids[3]={r,a,b}; return _alloc_prop(c,_fire_noop,p,3,ids,sizeof(BoundsMod_64_t)); }
+
+/* ------------------------------------------------------------------ */
+/* BoundsMul_64:  r = a * b  (singleton specialisation + range approx) */
+/* ------------------------------------------------------------------ */
+
+/* Overflow-safe 64-bit multiply: returns 1 if a*b overflows int64 */
+static int _mul64_overflow(int64_t a, int64_t b, int64_t *out) {
+    if (a == 0 || b == 0) { *out = 0; return 0; }
+#ifdef __GNUC__
+    return __builtin_mul_overflow(a, b, out);
+#else
+    /* Conservative fallback: clamp to INT64_MIN/MAX */
+    int64_t res = a * b;
+    if (a != 0 && res / a != b) {
+        *out = ((a > 0) == (b > 0)) ? INT64_MAX : INT64_MIN;
+        return 1;
+    }
+    *out = res;
+    return 0;
+#endif
+}
+
+static PropResult _fire_bounds_mul_64(Propagator *self, SolveCtx *ctx) {
+    PropWatchSect *ws  = PROP_WS(self);
+    uint32_t       rid = ws->var_ids[0];
+    uint32_t       aid = ws->var_ids[1];
+    uint32_t       bid = ws->var_ids[2];
+
+    int64_t alo = var_lo64(ctx, &ctx->vars[aid]);
+    int64_t ahi = var_hi64(ctx, &ctx->vars[aid]);
+    int64_t blo = var_lo64(ctx, &ctx->vars[bid]);
+    int64_t bhi = var_hi64(ctx, &ctx->vars[bid]);
+
+    PropResult res;
+
+    /* Singleton a: r = k * b */
+    if (alo == ahi) {
+        int64_t k = alo;
+        if (k > 0) {
+            int64_t fwd_lo, fwd_hi;
+            if (!_mul64_overflow(k, blo, &fwd_lo))
+                if ((res = ctx_tighten_lb64(ctx, rid, fwd_lo)) != PROP_OK) return res;
+            if (!_mul64_overflow(k, bhi, &fwd_hi))
+                if ((res = ctx_tighten_ub64(ctx, rid, fwd_hi)) != PROP_OK) return res;
+            /* Backward: b = r / k */
+            int64_t rlo = var_lo64(ctx, &ctx->vars[rid]);
+            int64_t rhi = var_hi64(ctx, &ctx->vars[rid]);
+            if ((res = ctx_tighten_lb64(ctx, bid, rlo / k)) != PROP_OK) return res;
+            if ((res = ctx_tighten_ub64(ctx, bid, rhi / k)) != PROP_OK) return res;
+        } else if (k < 0) {
+            int64_t fwd_lo, fwd_hi;
+            if (!_mul64_overflow(k, bhi, &fwd_lo))
+                if ((res = ctx_tighten_lb64(ctx, rid, fwd_lo)) != PROP_OK) return res;
+            if (!_mul64_overflow(k, blo, &fwd_hi))
+                if ((res = ctx_tighten_ub64(ctx, rid, fwd_hi)) != PROP_OK) return res;
+            /* Backward: b = r / k (reversed due to negative k) */
+            int64_t rlo = var_lo64(ctx, &ctx->vars[rid]);
+            int64_t rhi = var_hi64(ctx, &ctx->vars[rid]);
+            if ((res = ctx_tighten_lb64(ctx, bid, rhi / k)) != PROP_OK) return res;
+            if ((res = ctx_tighten_ub64(ctx, bid, rlo / k)) != PROP_OK) return res;
+        }
+        /* k == 0: r must be 0 */
+        if (k == 0) {
+            if ((res = ctx_tighten_lb64(ctx, rid, 0)) != PROP_OK) return res;
+            if ((res = ctx_tighten_ub64(ctx, rid, 0)) != PROP_OK) return res;
+        }
+    }
+
+    /* Singleton b: r = a * k (symmetric case) */
+    if (blo == bhi) {
+        int64_t k = blo;
+        if (k > 0) {
+            int64_t fwd_lo, fwd_hi;
+            if (!_mul64_overflow(alo, k, &fwd_lo))
+                if ((res = ctx_tighten_lb64(ctx, rid, fwd_lo)) != PROP_OK) return res;
+            if (!_mul64_overflow(ahi, k, &fwd_hi))
+                if ((res = ctx_tighten_ub64(ctx, rid, fwd_hi)) != PROP_OK) return res;
+            int64_t rlo = var_lo64(ctx, &ctx->vars[rid]);
+            int64_t rhi = var_hi64(ctx, &ctx->vars[rid]);
+            if ((res = ctx_tighten_lb64(ctx, aid, rlo / k)) != PROP_OK) return res;
+            if ((res = ctx_tighten_ub64(ctx, aid, rhi / k)) != PROP_OK) return res;
+        } else if (k < 0) {
+            int64_t fwd_lo, fwd_hi;
+            if (!_mul64_overflow(ahi, k, &fwd_lo))
+                if ((res = ctx_tighten_lb64(ctx, rid, fwd_lo)) != PROP_OK) return res;
+            if (!_mul64_overflow(alo, k, &fwd_hi))
+                if ((res = ctx_tighten_ub64(ctx, rid, fwd_hi)) != PROP_OK) return res;
+            int64_t rlo = var_lo64(ctx, &ctx->vars[rid]);
+            int64_t rhi = var_hi64(ctx, &ctx->vars[rid]);
+            if ((res = ctx_tighten_lb64(ctx, aid, rhi / k)) != PROP_OK) return res;
+            if ((res = ctx_tighten_ub64(ctx, aid, rlo / k)) != PROP_OK) return res;
+        }
+        if (k == 0) {
+            if ((res = ctx_tighten_lb64(ctx, rid, 0)) != PROP_OK) return res;
+            if ((res = ctx_tighten_ub64(ctx, rid, 0)) != PROP_OK) return res;
+        }
+    }
+
+    return PROP_OK;
+}
+
+uint32_t prop_add_bounds_mul_64(SolveCtx *c, uint32_t r, uint32_t a, uint32_t b, uint8_t p) {
+    uint32_t ids[3]={r,a,b};
+    return _alloc_prop(c, _fire_bounds_mul_64, p, 3, ids, sizeof(BoundsMul_64_t));
+}
+
+/* ------------------------------------------------------------------ */
+/* BoundsDiv_64:  r = a / b  (conservative, singleton b > 0)          */
+/* ------------------------------------------------------------------ */
+
+static PropResult _fire_bounds_div_64(Propagator *self, SolveCtx *ctx) {
+    PropWatchSect *ws  = PROP_WS(self);
+    uint32_t       rid = ws->var_ids[0];
+    uint32_t       aid = ws->var_ids[1];
+    uint32_t       bid = ws->var_ids[2];
+
+    int64_t blo = var_lo64(ctx, &ctx->vars[bid]);
+    int64_t bhi = var_hi64(ctx, &ctx->vars[bid]);
+
+    PropResult res;
+
+    /* Only propagate when divisor is a non-zero singleton or positive range */
+    if (blo == bhi && blo != 0) {
+        int64_t k = blo;
+        int64_t alo = var_lo64(ctx, &ctx->vars[aid]);
+        int64_t ahi = var_hi64(ctx, &ctx->vars[aid]);
+        int64_t rlo, rhi;
+        if (k > 0) {
+            rlo = alo / k;
+            rhi = ahi / k;
+        } else {
+            rlo = ahi / k;
+            rhi = alo / k;
+        }
+        if (rlo > rhi) { int64_t t = rlo; rlo = rhi; rhi = t; }
+        if ((res = ctx_tighten_lb64(ctx, rid, rlo)) != PROP_OK) return res;
+        if ((res = ctx_tighten_ub64(ctx, rid, rhi)) != PROP_OK) return res;
+    } else if (blo > 0) {
+        /* Divisor is positive range: r in [a_lo/b_hi, a_hi/b_lo] */
+        int64_t alo = var_lo64(ctx, &ctx->vars[aid]);
+        int64_t ahi = var_hi64(ctx, &ctx->vars[aid]);
+        int64_t rlo = alo / bhi;
+        int64_t rhi = ahi / blo;
+        if ((res = ctx_tighten_lb64(ctx, rid, rlo)) != PROP_OK) return res;
+        if ((res = ctx_tighten_ub64(ctx, rid, rhi)) != PROP_OK) return res;
+    }
+
+    return PROP_OK;
+}
+
+uint32_t prop_add_bounds_div_64(SolveCtx *c, uint32_t r, uint32_t a, uint32_t b, uint8_t p) {
+    uint32_t ids[3]={r,a,b};
+    return _alloc_prop(c, _fire_bounds_div_64, p, 3, ids, sizeof(BoundsDiv_64_t));
+}
+
+/* ------------------------------------------------------------------ */
+/* BoundsMod_64:  r = a % b  (tighten r range from b)                */
+/* ------------------------------------------------------------------ */
+
+static PropResult _fire_bounds_mod_64(Propagator *self, SolveCtx *ctx) {
+    PropWatchSect *ws  = PROP_WS(self);
+    uint32_t       rid = ws->var_ids[0];
+    uint32_t       aid = ws->var_ids[1];
+    uint32_t       bid = ws->var_ids[2];
+
+    int64_t rlo = var_lo64(ctx, &ctx->vars[rid]);
+    int64_t rhi = var_hi64(ctx, &ctx->vars[rid]);
+    int64_t alo = var_lo64(ctx, &ctx->vars[aid]);
+    int64_t ahi = var_hi64(ctx, &ctx->vars[aid]);
+    int64_t blo = var_lo64(ctx, &ctx->vars[bid]);
+    int64_t bhi = var_hi64(ctx, &ctx->vars[bid]);
+
+    PropResult res;
+
+    /* Forward: tighten r from b */
+    if (blo == bhi && blo > 0) {
+        int64_t k = blo;
+        if ((res = ctx_tighten_lb64(ctx, rid, 0))     != PROP_OK) return res;
+        if ((res = ctx_tighten_ub64(ctx, rid, k - 1)) != PROP_OK) return res;
+    } else if (blo > 0) {
+        if ((res = ctx_tighten_lb64(ctx, rid, 0))       != PROP_OK) return res;
+        if ((res = ctx_tighten_ub64(ctx, rid, bhi - 1)) != PROP_OK) return res;
+    }
+
+    /* Forward: when a is singleton, compute r exactly */
+    if (alo == ahi && blo == bhi && blo > 0) {
+        int64_t val = alo % blo;
+        if (val < 0) val += blo;  /* ensure non-negative remainder */
+        if ((res = ctx_tighten_lb64(ctx, rid, val)) != PROP_OK) return res;
+        if ((res = ctx_tighten_ub64(ctx, rid, val)) != PROP_OK) return res;
+    }
+
+    /* Backward: when r and b are singletons, constrain a.
+     * a % b == r means a = b*k + r for some integer k >= 0.
+     * Tighten a_lo up to the nearest value >= a_lo with a%b == r,
+     * and a_hi down to the nearest value <= a_hi with a%b == r. */
+    rlo = var_lo64(ctx, &ctx->vars[rid]);
+    rhi = var_hi64(ctx, &ctx->vars[rid]);
+    if (rlo == rhi && blo == bhi && blo > 0) {
+        int64_t r_val = rlo;
+        int64_t b_val = blo;
+        /* Refresh a bounds after possible forward tightening */
+        alo = var_lo64(ctx, &ctx->vars[aid]);
+        ahi = var_hi64(ctx, &ctx->vars[aid]);
+
+        /* Find smallest a >= alo with a % b == r */
+        int64_t rem = alo % b_val;
+        if (rem < 0) rem += b_val;
+        int64_t new_alo = alo + ((r_val - rem + b_val) % b_val);
+        if (new_alo > ahi) return PROP_CONFLICT;
+        if ((res = ctx_tighten_lb64(ctx, aid, new_alo)) != PROP_OK) return res;
+
+        /* Find largest a <= ahi with a % b == r */
+        rem = ahi % b_val;
+        if (rem < 0) rem += b_val;
+        int64_t new_ahi = ahi - ((rem - r_val + b_val) % b_val);
+        if (new_ahi < new_alo) return PROP_CONFLICT;
+        if ((res = ctx_tighten_ub64(ctx, aid, new_ahi)) != PROP_OK) return res;
+    }
+
+    return PROP_OK;
+}
+
+uint32_t prop_add_bounds_mod_64(SolveCtx *c, uint32_t r, uint32_t a, uint32_t b, uint8_t p) {
+    uint32_t ids[3]={r,a,b};
+    return _alloc_prop(c, _fire_bounds_mod_64, p, 3, ids, sizeof(BoundsMod_64_t));
+}
 
 static PropResult _fire_unary_neg_64(Propagator *self, SolveCtx *ctx) {
     PropWatchSect *ws  = PROP_WS(self);
@@ -668,6 +1006,76 @@ static PropResult _fire_unary_neg_64(Propagator *self, SolveCtx *ctx) {
 uint32_t prop_add_unary_neg_64(SolveCtx *ctx, uint32_t r_id, uint32_t a_id, uint8_t priority) {
     uint32_t ids[2] = { r_id, a_id };
     return _alloc_prop(ctx, _fire_unary_neg_64, priority, 2, ids, sizeof(UnaryNeg_64_t));
+}
+
+
+/* ------------------------------------------------------------------ */
+/* ITEValue_64:  r = cond ? a : b                                     */
+/*   var_ids[0]=r, var_ids[1]=cond, var_ids[2]=a, var_ids[3]=b       */
+/* ------------------------------------------------------------------ */
+
+static PropResult _fire_ite_value_64(Propagator *self, SolveCtx *ctx) {
+    PropWatchSect *ws   = PROP_WS(self);
+    uint32_t       rid  = ws->var_ids[0];
+    uint32_t       cid  = ws->var_ids[1];
+    uint32_t       aid  = ws->var_ids[2];
+    uint32_t       bid  = ws->var_ids[3];
+
+    int64_t clo = var_lo64(ctx, &ctx->vars[cid]);
+    int64_t chi = var_hi64(ctx, &ctx->vars[cid]);
+    int64_t alo = var_lo64(ctx, &ctx->vars[aid]);
+    int64_t ahi = var_hi64(ctx, &ctx->vars[aid]);
+    int64_t blo = var_lo64(ctx, &ctx->vars[bid]);
+    int64_t bhi = var_hi64(ctx, &ctx->vars[bid]);
+    int64_t rlo = var_lo64(ctx, &ctx->vars[rid]);
+    int64_t rhi = var_hi64(ctx, &ctx->vars[rid]);
+
+    PropResult res;
+
+    if (clo == 1 && chi == 1) {
+        /* cond is true: r == a */
+        int64_t lo = i64_max(rlo, alo);
+        int64_t hi = i64_min(rhi, ahi);
+        if (lo > hi) return PROP_CONFLICT;
+        if ((res = ctx_tighten_lb64(ctx, rid, lo)) != PROP_OK) return res;
+        if ((res = ctx_tighten_ub64(ctx, rid, hi)) != PROP_OK) return res;
+        if ((res = ctx_tighten_lb64(ctx, aid, lo)) != PROP_OK) return res;
+        if ((res = ctx_tighten_ub64(ctx, aid, hi)) != PROP_OK) return res;
+        /* Check entailment */
+        rlo = var_lo64(ctx, &ctx->vars[rid]);
+        rhi = var_hi64(ctx, &ctx->vars[rid]);
+        alo = var_lo64(ctx, &ctx->vars[aid]);
+        if (rlo == rhi && alo == rlo) return PROP_ENTAILED;
+    } else if (clo == 0 && chi == 0) {
+        /* cond is false: r == b */
+        int64_t lo = i64_max(rlo, blo);
+        int64_t hi = i64_min(rhi, bhi);
+        if (lo > hi) return PROP_CONFLICT;
+        if ((res = ctx_tighten_lb64(ctx, rid, lo)) != PROP_OK) return res;
+        if ((res = ctx_tighten_ub64(ctx, rid, hi)) != PROP_OK) return res;
+        if ((res = ctx_tighten_lb64(ctx, bid, lo)) != PROP_OK) return res;
+        if ((res = ctx_tighten_ub64(ctx, bid, hi)) != PROP_OK) return res;
+        rlo = var_lo64(ctx, &ctx->vars[rid]);
+        rhi = var_hi64(ctx, &ctx->vars[rid]);
+        blo = var_lo64(ctx, &ctx->vars[bid]);
+        if (rlo == rhi && blo == rlo) return PROP_ENTAILED;
+    } else {
+        /* cond is undecided: r covers union of a and b ranges */
+        int64_t lo = i64_min(alo, blo);
+        int64_t hi = i64_max(ahi, bhi);
+        if ((res = ctx_tighten_lb64(ctx, rid, lo)) != PROP_OK) return res;
+        if ((res = ctx_tighten_ub64(ctx, rid, hi)) != PROP_OK) return res;
+    }
+
+    return PROP_OK;
+}
+
+uint32_t prop_add_ite_value_64(SolveCtx *ctx, uint32_t r_id,
+                                uint32_t cond_id, uint32_t a_id,
+                                uint32_t b_id, uint8_t priority) {
+    uint32_t ids[4] = { r_id, cond_id, a_id, b_id };
+    return _alloc_prop(ctx, _fire_ite_value_64, priority, 4, ids,
+                       sizeof(ITEValue_64_t));
 }
 
 static PropResult _fire_in_set_64(Propagator *self, SolveCtx *ctx) {
@@ -732,6 +1140,442 @@ uint32_t prop_add_bit_slice_64(SolveCtx *ctx, uint32_t r_id, uint32_t a_id,
     if (ref == EXPR_NULL) return EXPR_NULL;
     BitSlice_64_t *p = (BitSlice_64_t *)zsp_pool_ptr(&ctx->pool, ref);
     p->hi_bit = hi_bit; p->lo_bit = lo_bit;
+    return ref;
+}
+
+
+/* ------------------------------------------------------------------ */
+/* BoundsBAND_64:  r = a & b                                          */
+/* ------------------------------------------------------------------ */
+
+static PropResult _fire_bounds_band_64(Propagator *self, SolveCtx *ctx) {
+    PropWatchSect *ws  = PROP_WS(self);
+    uint32_t       rid = ws->var_ids[0];
+    uint32_t       aid = ws->var_ids[1];
+    uint32_t       bid = ws->var_ids[2];
+
+    int64_t alo = var_lo64(ctx, &ctx->vars[aid]);
+    int64_t ahi = var_hi64(ctx, &ctx->vars[aid]);
+    int64_t blo = var_lo64(ctx, &ctx->vars[bid]);
+    int64_t bhi = var_hi64(ctx, &ctx->vars[bid]);
+
+    PropResult res;
+
+    /* Both singletons: exact result */
+    if (alo == ahi && blo == bhi) {
+        int64_t exact = alo & blo;
+        if ((res = ctx_tighten_lb64(ctx, rid, exact)) != PROP_OK) return res;
+        if ((res = ctx_tighten_ub64(ctx, rid, exact)) != PROP_OK) return res;
+        return PROP_OK;
+    }
+
+    /* Upper bound: r <= min(a_hi, b_hi) since AND can only clear bits */
+    int64_t r_hi_new = i64_min(ahi, bhi);
+    if ((res = ctx_tighten_ub64(ctx, rid, r_hi_new)) != PROP_OK) return res;
+
+    /* Lower bound: only tighten when the AND result is guaranteed.
+     * AND is non-monotone so a_lo & b_lo is NOT a valid lower bound.
+     * Example: a in [10,200], b=15 -> a&b ranges from 0 to 15.
+     * We only set r_lo = 0 if it helps (non-negative operands). */
+    if (alo >= 0 && blo >= 0) {
+        if ((res = ctx_tighten_lb64(ctx, rid, 0)) != PROP_OK) return res;
+    }
+
+    /* Singleton a: r = a_val & b, so r <= a_val */
+    if (alo == ahi) {
+        if ((res = ctx_tighten_ub64(ctx, rid, alo)) != PROP_OK) return res;
+    }
+    /* Singleton b: r = a & b_val, so r <= b_val */
+    if (blo == bhi) {
+        if ((res = ctx_tighten_ub64(ctx, rid, blo)) != PROP_OK) return res;
+    }
+
+    /* Backward: when r and b are singletons, constrain a.
+     * r = a & mask. Bits set in r must also be set in a.
+     * Bits clear in mask cannot be set in a (irrelevant for bounds).
+     * For bounds propagation with singleton r and b:
+     * a must have all bits of r set: a_lo |= r_val (set required bits) */
+    {
+        int64_t rlo = var_lo64(ctx, &ctx->vars[rid]);
+        int64_t rhi = var_hi64(ctx, &ctx->vars[rid]);
+        if (rlo == rhi && blo == bhi && blo > 0) {
+            /* Bits in r must be set in a; bits outside mask are free.
+             * a_lo: ensure bits of r are present.
+             * We can also narrow a_hi: clear bits in a that are outside mask
+             * and would push the result above r. */
+            int64_t r_val = rlo;
+            int64_t mask = blo;
+            /* Forward-compute exact check: for each bit in mask that is NOT
+             * in r, that bit in a could be 0 or 1 (won't affect r).
+             * For each bit in mask that IS in r, that bit in a MUST be 1.
+             * Backward tighten: set the mandatory bits in a_lo. */
+            alo = var_lo64(ctx, &ctx->vars[aid]);
+            int64_t new_alo = alo | r_val;  /* bits required by r */
+            if (new_alo > alo) {
+                if ((res = ctx_tighten_lb64(ctx, aid, new_alo)) != PROP_OK) return res;
+            }
+        }
+    }
+
+    return PROP_OK;
+}
+
+uint32_t prop_add_bounds_band_64(SolveCtx *ctx, uint32_t r_id,
+                                  uint32_t a_id, uint32_t b_id,
+                                  uint8_t priority) {
+    uint32_t ids[3] = { r_id, a_id, b_id };
+    return _alloc_prop(ctx, _fire_bounds_band_64, priority, 3, ids,
+                       sizeof(BoundsBAND_64_t));
+}
+
+/* ------------------------------------------------------------------ */
+/* BoundsBOR_64:  r = a | b                                           */
+/* ------------------------------------------------------------------ */
+
+static PropResult _fire_bounds_bor_64(Propagator *self, SolveCtx *ctx) {
+    PropWatchSect *ws  = PROP_WS(self);
+    uint32_t       rid = ws->var_ids[0];
+    uint32_t       aid = ws->var_ids[1];
+    uint32_t       bid = ws->var_ids[2];
+
+    int64_t alo = var_lo64(ctx, &ctx->vars[aid]);
+    int64_t ahi = var_hi64(ctx, &ctx->vars[aid]);
+    int64_t blo = var_lo64(ctx, &ctx->vars[bid]);
+    int64_t bhi = var_hi64(ctx, &ctx->vars[bid]);
+
+    PropResult res;
+
+    /* Both singletons: exact result */
+    if (alo == ahi && blo == bhi) {
+        int64_t exact = alo | blo;
+        if ((res = ctx_tighten_lb64(ctx, rid, exact)) != PROP_OK) return res;
+        if ((res = ctx_tighten_ub64(ctx, rid, exact)) != PROP_OK) return res;
+        return PROP_OK;
+    }
+
+    /* Lower bound: r >= a_lo | b_lo (OR can only set bits) */
+    if (alo >= 0 && blo >= 0) {
+        if ((res = ctx_tighten_lb64(ctx, rid, alo | blo)) != PROP_OK) return res;
+    }
+
+    /* Singleton: r >= singleton_val */
+    if (alo == ahi && alo >= 0) {
+        if ((res = ctx_tighten_lb64(ctx, rid, alo)) != PROP_OK) return res;
+    }
+    if (blo == bhi && blo >= 0) {
+        if ((res = ctx_tighten_lb64(ctx, rid, blo)) != PROP_OK) return res;
+    }
+
+    return PROP_OK;
+}
+
+uint32_t prop_add_bounds_bor_64(SolveCtx *ctx, uint32_t r_id,
+                                 uint32_t a_id, uint32_t b_id,
+                                 uint8_t priority) {
+    uint32_t ids[3] = { r_id, a_id, b_id };
+    return _alloc_prop(ctx, _fire_bounds_bor_64, priority, 3, ids,
+                       sizeof(BoundsBOR_64_t));
+}
+
+/* ------------------------------------------------------------------ */
+/* BoundsBXOR_64:  r = a ^ b                                         */
+/* ------------------------------------------------------------------ */
+
+static PropResult _fire_bounds_bxor_64(Propagator *self, SolveCtx *ctx) {
+    PropWatchSect *ws  = PROP_WS(self);
+    uint32_t       rid = ws->var_ids[0];
+    uint32_t       aid = ws->var_ids[1];
+    uint32_t       bid = ws->var_ids[2];
+
+    int64_t alo = var_lo64(ctx, &ctx->vars[aid]);
+    int64_t ahi = var_hi64(ctx, &ctx->vars[aid]);
+    int64_t blo = var_lo64(ctx, &ctx->vars[bid]);
+    int64_t bhi = var_hi64(ctx, &ctx->vars[bid]);
+
+    PropResult res;
+
+    /* Both singletons: exact result */
+    if (alo == ahi && blo == bhi) {
+        int64_t exact = alo ^ blo;
+        if ((res = ctx_tighten_lb64(ctx, rid, exact)) != PROP_OK) return res;
+        if ((res = ctx_tighten_ub64(ctx, rid, exact)) != PROP_OK) return res;
+        return PROP_OK;
+    }
+
+    /* One singleton: XOR is a bijection, but bounds approximation only
+     * works correctly when the other operand is also singleton.
+     * For non-singleton cases, XOR can scramble bit ordering.
+     * Only do backward propagation when both endpoints XOR to valid bounds. */
+    if (alo == ahi && blo == bhi) {
+        /* Already handled above */
+    } else if (alo == ahi) {
+        int64_t k = alo;
+        /* Only safe if b is singleton (already handled) or for backward
+         * propagation when r is singleton */
+        int64_t rlo = var_lo64(ctx, &ctx->vars[rid]);
+        int64_t rhi = var_hi64(ctx, &ctx->vars[rid]);
+        if (rlo == rhi) {
+            /* r is singleton: b = r ^ k */
+            int64_t b_exact = rlo ^ k;
+            if ((res = ctx_tighten_lb64(ctx, bid, b_exact)) != PROP_OK) return res;
+            if ((res = ctx_tighten_ub64(ctx, bid, b_exact)) != PROP_OK) return res;
+        }
+    } else if (blo == bhi) {
+        int64_t k = blo;
+        int64_t rlo = var_lo64(ctx, &ctx->vars[rid]);
+        int64_t rhi = var_hi64(ctx, &ctx->vars[rid]);
+        if (rlo == rhi) {
+            /* r is singleton: a = r ^ k */
+            int64_t a_exact = rlo ^ k;
+            if ((res = ctx_tighten_lb64(ctx, aid, a_exact)) != PROP_OK) return res;
+            if ((res = ctx_tighten_ub64(ctx, aid, a_exact)) != PROP_OK) return res;
+        }
+    }
+
+    return PROP_OK;
+}
+
+uint32_t prop_add_bounds_bxor_64(SolveCtx *ctx, uint32_t r_id,
+                                  uint32_t a_id, uint32_t b_id,
+                                  uint8_t priority) {
+    uint32_t ids[3] = { r_id, a_id, b_id };
+    return _alloc_prop(ctx, _fire_bounds_bxor_64, priority, 3, ids,
+                       sizeof(BoundsBXOR_64_t));
+}
+
+/* ------------------------------------------------------------------ */
+/* BoundsBNOT_64:  r = ~a                                            */
+/* ------------------------------------------------------------------ */
+
+static PropResult _fire_bounds_bnot_64(Propagator *self, SolveCtx *ctx) {
+    PropWatchSect *ws  = PROP_WS(self);
+    uint32_t       rid = ws->var_ids[0];
+    uint32_t       aid = ws->var_ids[1];
+
+    int64_t alo = var_lo64(ctx, &ctx->vars[aid]);
+    int64_t ahi = var_hi64(ctx, &ctx->vars[aid]);
+
+    PropResult res;
+
+    /* ~a reverses ordering: r_lo = ~a_hi, r_hi = ~a_lo */
+    if ((res = ctx_tighten_lb64(ctx, rid, ~ahi)) != PROP_OK) return res;
+    if ((res = ctx_tighten_ub64(ctx, rid, ~alo)) != PROP_OK) return res;
+
+    /* Backward: a_lo = ~r_hi, a_hi = ~r_lo */
+    int64_t rlo = var_lo64(ctx, &ctx->vars[rid]);
+    int64_t rhi = var_hi64(ctx, &ctx->vars[rid]);
+    if ((res = ctx_tighten_lb64(ctx, aid, ~rhi)) != PROP_OK) return res;
+    if ((res = ctx_tighten_ub64(ctx, aid, ~rlo)) != PROP_OK) return res;
+
+    return PROP_OK;
+}
+
+uint32_t prop_add_bounds_bnot_64(SolveCtx *ctx, uint32_t r_id,
+                                  uint32_t a_id, uint8_t priority) {
+    uint32_t ids[2] = { r_id, a_id };
+    return _alloc_prop(ctx, _fire_bounds_bnot_64, priority, 2, ids,
+                       sizeof(BoundsBNOT_64_t));
+}
+
+
+/* ------------------------------------------------------------------ */
+/* BoundsSHL_64:  r = a << b                                          */
+/* ------------------------------------------------------------------ */
+
+static PropResult _fire_bounds_shl_64(Propagator *self, SolveCtx *ctx) {
+    PropWatchSect *ws  = PROP_WS(self);
+    uint32_t       rid = ws->var_ids[0];
+    uint32_t       aid = ws->var_ids[1];
+    uint32_t       bid = ws->var_ids[2];
+
+    int64_t alo = var_lo64(ctx, &ctx->vars[aid]);
+    int64_t ahi = var_hi64(ctx, &ctx->vars[aid]);
+    int64_t blo = var_lo64(ctx, &ctx->vars[bid]);
+    int64_t bhi = var_hi64(ctx, &ctx->vars[bid]);
+
+    PropResult res;
+
+    /* Clamp shift amount to [0, 63] */
+    if (blo < 0) blo = 0;
+    if (bhi > 63) bhi = 63;
+
+    /* Both singletons: exact result */
+    if (alo == ahi && blo == bhi) {
+        int64_t exact = alo << blo;
+        if ((res = ctx_tighten_lb64(ctx, rid, exact)) != PROP_OK) return res;
+        if ((res = ctx_tighten_ub64(ctx, rid, exact)) != PROP_OK) return res;
+        return PROP_OK;
+    }
+
+    /* Singleton shift amount */
+    if (blo == bhi) {
+        int64_t s = blo;
+        if (alo >= 0) {
+            if ((res = ctx_tighten_lb64(ctx, rid, alo << s)) != PROP_OK) return res;
+            if ((res = ctx_tighten_ub64(ctx, rid, ahi << s)) != PROP_OK) return res;
+        }
+        /* Backward: a = r >> s */
+        int64_t rlo = var_lo64(ctx, &ctx->vars[rid]);
+        int64_t rhi = var_hi64(ctx, &ctx->vars[rid]);
+        if (s > 0 && rlo >= 0) {
+            if ((res = ctx_tighten_lb64(ctx, aid, rlo >> s)) != PROP_OK) return res;
+            if ((res = ctx_tighten_ub64(ctx, aid, rhi >> s)) != PROP_OK) return res;
+        }
+    } else if (alo >= 0) {
+        /* Variable shift: conservative bounds */
+        if ((res = ctx_tighten_lb64(ctx, rid, alo << blo)) != PROP_OK) return res;
+    }
+
+    return PROP_OK;
+}
+
+uint32_t prop_add_bounds_shl_64(SolveCtx *ctx, uint32_t r_id,
+                                 uint32_t a_id, uint32_t b_id,
+                                 uint8_t priority) {
+    uint32_t ids[3] = { r_id, a_id, b_id };
+    return _alloc_prop(ctx, _fire_bounds_shl_64, priority, 3, ids,
+                       sizeof(BoundsSHL_64_t));
+}
+
+/* ------------------------------------------------------------------ */
+/* BoundsLSHR_64:  r = a >> b  (logical right shift)                  */
+/* ------------------------------------------------------------------ */
+
+static PropResult _fire_bounds_lshr_64(Propagator *self, SolveCtx *ctx) {
+    PropWatchSect *ws  = PROP_WS(self);
+    uint32_t       rid = ws->var_ids[0];
+    uint32_t       aid = ws->var_ids[1];
+    uint32_t       bid = ws->var_ids[2];
+
+    int64_t alo = var_lo64(ctx, &ctx->vars[aid]);
+    int64_t ahi = var_hi64(ctx, &ctx->vars[aid]);
+    int64_t blo = var_lo64(ctx, &ctx->vars[bid]);
+    int64_t bhi = var_hi64(ctx, &ctx->vars[bid]);
+
+    PropResult res;
+
+    if (blo < 0) blo = 0;
+    if (bhi > 63) bhi = 63;
+
+    /* Both singletons: exact result */
+    if (alo == ahi && blo == bhi) {
+        int64_t exact = (alo >= 0) ? (alo >> blo) : (int64_t)((uint64_t)alo >> blo);
+        if ((res = ctx_tighten_lb64(ctx, rid, exact)) != PROP_OK) return res;
+        if ((res = ctx_tighten_ub64(ctx, rid, exact)) != PROP_OK) return res;
+        return PROP_OK;
+    }
+
+    /* Singleton shift amount */
+    if (blo == bhi && alo >= 0) {
+        int64_t s = blo;
+        if ((res = ctx_tighten_lb64(ctx, rid, alo >> s)) != PROP_OK) return res;
+        if ((res = ctx_tighten_ub64(ctx, rid, ahi >> s)) != PROP_OK) return res;
+        /* Backward */
+        int64_t rlo = var_lo64(ctx, &ctx->vars[rid]);
+        int64_t rhi = var_hi64(ctx, &ctx->vars[rid]);
+        if ((res = ctx_tighten_lb64(ctx, aid, rlo << s)) != PROP_OK) return res;
+        if ((res = ctx_tighten_ub64(ctx, aid, ((rhi + 1) << s) - 1)) != PROP_OK) return res;
+    } else if (alo >= 0 && bhi > 0) {
+        /* Variable shift: r_lo = a_lo >> b_hi, r_hi = a_hi >> b_lo */
+        if ((res = ctx_tighten_lb64(ctx, rid, alo >> bhi)) != PROP_OK) return res;
+        if ((res = ctx_tighten_ub64(ctx, rid, ahi >> blo)) != PROP_OK) return res;
+    }
+
+    return PROP_OK;
+}
+
+uint32_t prop_add_bounds_lshr_64(SolveCtx *ctx, uint32_t r_id,
+                                  uint32_t a_id, uint32_t b_id,
+                                  uint8_t priority) {
+    uint32_t ids[3] = { r_id, a_id, b_id };
+    return _alloc_prop(ctx, _fire_bounds_lshr_64, priority, 3, ids,
+                       sizeof(BoundsLSHR_64_t));
+}
+
+
+/* ------------------------------------------------------------------ */
+/* BoundsConcat_64:  r = {hi, lo}                                     */
+/*   var_ids[0]=r, var_ids[1]=hi, var_ids[2]=lo                      */
+/*   lo_width = bit width of lo operand                               */
+/* ------------------------------------------------------------------ */
+
+static PropResult _fire_bounds_concat_64(Propagator *self, SolveCtx *ctx) {
+    BoundsConcat_64_t *cself = (BoundsConcat_64_t *)self;
+    PropWatchSect *ws  = PROP_WS(self);
+    uint32_t       rid = ws->var_ids[0];
+    uint32_t       hid = ws->var_ids[1];
+    uint32_t       lid = ws->var_ids[2];
+
+    uint8_t lo_w = cself->lo_width;
+    int64_t lo_mask = (lo_w < 64) ? ((int64_t)1 << lo_w) - 1 : -1;
+
+    int64_t rlo = var_lo64(ctx, &ctx->vars[rid]);
+    int64_t rhi = var_hi64(ctx, &ctx->vars[rid]);
+    int64_t hlo = var_lo64(ctx, &ctx->vars[hid]);
+    int64_t hhi = var_hi64(ctx, &ctx->vars[hid]);
+    int64_t llo = var_lo64(ctx, &ctx->vars[lid]);
+    int64_t lhi = var_hi64(ctx, &ctx->vars[lid]);
+
+    PropResult res;
+
+    /* Forward: r = (hi << lo_w) | lo (unsigned concat) */
+    if (hlo >= 0 && llo >= 0 && lo_w < 64) {
+        int64_t fwd_lo = (hlo << lo_w) | llo;
+        int64_t fwd_hi = (hhi << lo_w) | lhi;
+        if ((res = ctx_tighten_lb64(ctx, rid, fwd_lo)) != PROP_OK) return res;
+        if ((res = ctx_tighten_ub64(ctx, rid, fwd_hi)) != PROP_OK) return res;
+    }
+
+    /* Re-read r after possible tightening */
+    rlo = var_lo64(ctx, &ctx->vars[rid]);
+    rhi = var_hi64(ctx, &ctx->vars[rid]);
+
+    /* Backward: hi = r >> lo_w */
+    if (rlo >= 0 && lo_w < 64) {
+        if ((res = ctx_tighten_lb64(ctx, hid, rlo >> lo_w)) != PROP_OK) return res;
+        if ((res = ctx_tighten_ub64(ctx, hid, rhi >> lo_w)) != PROP_OK) return res;
+    }
+
+    /* Backward: lo = r & lo_mask (only precise when hi is singleton) */
+    hlo = var_lo64(ctx, &ctx->vars[hid]);
+    hhi = var_hi64(ctx, &ctx->vars[hid]);
+    if (hlo == hhi && rlo >= 0 && lo_w < 64) {
+        int64_t base = hlo << lo_w;
+        int64_t lo_from_rlo = rlo - base;
+        int64_t lo_from_rhi = rhi - base;
+        if (lo_from_rlo >= 0 && lo_from_rhi >= 0) {
+            if ((res = ctx_tighten_lb64(ctx, lid, lo_from_rlo)) != PROP_OK) return res;
+            if ((res = ctx_tighten_ub64(ctx, lid, lo_from_rhi)) != PROP_OK) return res;
+        }
+    }
+    /* Constrain lo to valid range */
+    if (lo_w < 64) {
+        if ((res = ctx_tighten_lb64(ctx, lid, 0)) != PROP_OK) return res;
+        if ((res = ctx_tighten_ub64(ctx, lid, lo_mask)) != PROP_OK) return res;
+    }
+
+    /* Entailment: all three singletons */
+    rlo = var_lo64(ctx, &ctx->vars[rid]);
+    rhi = var_hi64(ctx, &ctx->vars[rid]);
+    hlo = var_lo64(ctx, &ctx->vars[hid]);
+    hhi = var_hi64(ctx, &ctx->vars[hid]);
+    llo = var_lo64(ctx, &ctx->vars[lid]);
+    lhi = var_hi64(ctx, &ctx->vars[lid]);
+    if (rlo == rhi && hlo == hhi && llo == lhi) return PROP_ENTAILED;
+
+    return PROP_OK;
+}
+
+uint32_t prop_add_bounds_concat_64(SolveCtx *ctx, uint32_t r_id,
+                                    uint32_t hi_id, uint32_t lo_id,
+                                    uint8_t lo_width, uint8_t priority) {
+    uint32_t ids[3] = { r_id, hi_id, lo_id };
+    uint32_t ref = _alloc_prop(ctx, _fire_bounds_concat_64, priority, 3, ids,
+                                sizeof(BoundsConcat_64_t));
+    if (ref == EXPR_NULL) return EXPR_NULL;
+
+    BoundsConcat_64_t *p = (BoundsConcat_64_t *)zsp_pool_ptr(&ctx->pool, ref);
+    p->lo_width = lo_width;
     return ref;
 }
 
@@ -831,4 +1675,404 @@ uint32_t prop_add_disj_clause(SolveCtx *ctx,
         dc->clauses[i].constant = constants[i];
     }
     return ref;
+}
+
+/* ------------------------------------------------------------------ */
+/* AllDifferent_32:  x0, x1, ..., xN are all distinct                 */
+/*                                                                     */
+/* Propagation strategy (in order):                                   */
+/*   1. Pigeonhole check: count distinct reachable values; if fewer   */
+/*      than n_vars, return PROP_CONFLICT.                            */
+/*   2. Singleton exclusion: for each variable that is assigned        */
+/*      (lo == hi), tighten bounds of all other variables to exclude  */
+/*      that value.  This is the most common propagation in practice. */
+/*   3. Hall interval detection: sort by lo, sweep to find intervals  */
+/*      where count of contained domains exceeds interval width.      */
+/*   4. Entailment: all variables assigned and distinct.              */
+/* ------------------------------------------------------------------ */
+
+static PropResult _fire_all_different_32(Propagator *self, SolveCtx *ctx) {
+    AllDifferent_t *ad = (AllDifferent_t *)self;
+    uint32_t n = ad->n_vars;
+
+    /* --- Singleton exclusion (most common propagation) --- */
+    for (uint32_t i = 0; i < n; i++) {
+        Variable *vi = &ctx->vars[ad->var_ids[i]];
+        if (vi->lo != vi->hi) continue;
+        int32_t val = vi->lo;
+        for (uint32_t j = 0; j < n; j++) {
+            if (j == i) continue;
+            uint32_t vj_id = ad->var_ids[j];
+            Variable *vj = &ctx->vars[vj_id];
+            if (vj->lo == val) {
+                PropResult r = ctx_tighten_lb32(ctx, vj_id, val + 1);
+                if (r == PROP_CONFLICT) return PROP_CONFLICT;
+            }
+            if (vj->hi == val) {
+                PropResult r = ctx_tighten_ub32(ctx, vj_id, val - 1);
+                if (r == PROP_CONFLICT) return PROP_CONFLICT;
+            }
+        }
+    }
+
+    /* --- Pigeonhole check --- */
+    /* Find global lo/hi across all variables */
+    int32_t glo = ctx->vars[ad->var_ids[0]].lo;
+    int32_t ghi = ctx->vars[ad->var_ids[0]].hi;
+    for (uint32_t i = 1; i < n; i++) {
+        Variable *vi = &ctx->vars[ad->var_ids[i]];
+        if (vi->lo < glo) glo = vi->lo;
+        if (vi->hi > ghi) ghi = vi->hi;
+    }
+    /* Domain union cardinality upper bound */
+    int64_t union_size = (int64_t)ghi - (int64_t)glo + 1;
+    if (union_size < (int64_t)n) return PROP_CONFLICT;
+
+    /* --- Hall interval detection via sweep --- */
+    /* Sort variables by lo bound (insertion sort, n <= 16) */
+    uint32_t sorted[MAX_ALLDIFF_VARS];
+    for (uint32_t i = 0; i < n; i++) sorted[i] = i;
+    for (uint32_t i = 1; i < n; i++) {
+        uint32_t key = sorted[i];
+        int32_t key_lo = ctx->vars[ad->var_ids[key]].lo;
+        uint32_t j = i;
+        while (j > 0 && ctx->vars[ad->var_ids[sorted[j - 1]]].lo > key_lo) {
+            sorted[j] = sorted[j - 1];
+            j--;
+        }
+        sorted[j] = key;
+    }
+
+    /* Sweep: for each starting position, count how many domains are
+       fully contained in [start_lo, end_hi].  If count > width, tighten. */
+    for (uint32_t start = 0; start < n; start++) {
+        int32_t lo_s = ctx->vars[ad->var_ids[sorted[start]]].lo;
+        int32_t max_hi = lo_s;
+        uint32_t count = 0;
+        for (uint32_t end = start; end < n; end++) {
+            uint32_t idx = ad->var_ids[sorted[end]];
+            Variable *ve = &ctx->vars[idx];
+            if (ve->lo >= lo_s) {
+                if (ve->hi > max_hi) max_hi = ve->hi;
+                count++;
+            }
+            int64_t width = (int64_t)max_hi - (int64_t)lo_s + 1;
+            if ((int64_t)count > width) return PROP_CONFLICT;
+            /* If count == width (Hall interval), variables outside must
+               avoid [lo_s, max_hi] */
+            if ((int64_t)count == width && count >= 2) {
+                for (uint32_t k = 0; k < n; k++) {
+                    uint32_t kid = ad->var_ids[k];
+                    Variable *vk = &ctx->vars[kid];
+                    /* Skip variables that are part of this Hall interval */
+                    int in_hall = (vk->lo >= lo_s && vk->hi <= max_hi);
+                    if (in_hall) continue;
+                    /* If vk overlaps the Hall interval, tighten */
+                    if (vk->lo >= lo_s && vk->lo <= max_hi) {
+                        PropResult r = ctx_tighten_lb32(ctx, kid, max_hi + 1);
+                        if (r == PROP_CONFLICT) return PROP_CONFLICT;
+                    }
+                    if (vk->hi >= lo_s && vk->hi <= max_hi) {
+                        PropResult r = ctx_tighten_ub32(ctx, kid, lo_s - 1);
+                        if (r == PROP_CONFLICT) return PROP_CONFLICT;
+                    }
+                }
+            }
+        }
+    }
+
+    /* --- Entailment check --- */
+    int all_assigned = 1;
+    for (uint32_t i = 0; i < n; i++) {
+        Variable *vi = &ctx->vars[ad->var_ids[i]];
+        if (vi->lo != vi->hi) { all_assigned = 0; break; }
+    }
+    if (all_assigned) {
+        /* Verify all distinct (should be guaranteed by propagation) */
+        for (uint32_t i = 0; i < n; i++) {
+            for (uint32_t j = i + 1; j < n; j++) {
+                if (ctx->vars[ad->var_ids[i]].lo ==
+                    ctx->vars[ad->var_ids[j]].lo)
+                    return PROP_CONFLICT;
+            }
+        }
+        return PROP_ENTAILED;
+    }
+
+    return PROP_OK;
+}
+
+uint32_t prop_add_all_different(SolveCtx *ctx, uint32_t n_vars,
+                                 const uint32_t *var_ids, uint8_t priority) {
+    if (n_vars < 2 || n_vars > MAX_ALLDIFF_VARS) return EXPR_NULL;
+
+    /* Reject variables wider than 32 bits */
+    for (uint32_t i = 0; i < n_vars; i++) {
+        if (ctx->vars[var_ids[i]].width > 32) return EXPR_NULL;
+    }
+
+    uint32_t ref = zsp_pool_alloc(&ctx->pool, (uint32_t)sizeof(AllDifferent_t), 8u);
+    if (ref == EXPR_NULL) return EXPR_NULL;
+
+    AllDifferent_t *ad = (AllDifferent_t *)zsp_pool_ptr(&ctx->pool, ref);
+    memset(ad, 0, sizeof(AllDifferent_t));
+
+    ad->hdr.fire       = _fire_all_different_32;
+    ad->hdr.queue_next = EXPR_NULL;
+    ad->hdr.prop_id    = (uint16_t)ctx->n_props++;
+    ad->hdr.priority   = priority;
+    ad->hdr.flags      = PROP_FLAG_WIDE_WATCH;
+    ad->n_vars         = n_vars;
+    ad->_capacity      = MAX_ALLDIFF_VARS;
+
+    for (uint32_t i = 0; i < n_vars; i++) {
+        ad->var_ids[i] = var_ids[i];
+    }
+
+    /* Register watchers: insert this propagator into each variable's
+       watcher chain.  Store the previous head as watcher_nexts[i]. */
+    for (uint32_t i = 0; i < n_vars; i++) {
+        uint32_t vid = var_ids[i];
+        ad->watcher_nexts[i]    = ctx->watcher_heads[vid];
+        ctx->watcher_heads[vid] = ref;
+    }
+
+    prop_enqueue(ctx, ref);
+
+    /* Record prop ref for checkpoint/restore */
+    if (ctx->prop_refs && ad->hdr.prop_id < ctx->n_prop_refs_capacity)
+        ctx->prop_refs[ad->hdr.prop_id] = ref;
+
+    return ref;
+}
+
+/* ------------------------------------------------------------------ */
+/* SumEq_32: result == summand[0] + summand[1] + ... + summand[N-1]   */
+/* ------------------------------------------------------------------ */
+
+static PropResult _fire_sum_eq_32(Propagator *self, SolveCtx *ctx) {
+    SumEq_32_t *s = (SumEq_32_t *)self;
+    uint32_t n = s->n_vars;  /* total watches: [0]=result, [1..n-1]=summands */
+    uint32_t rid = s->var_ids[0];
+    uint32_t n_sum = n - 1;
+
+    /* Compute sum of lower bounds and sum of upper bounds */
+    int64_t sum_lo = 0, sum_hi = 0;
+    for (uint32_t i = 1; i < n; i++) {
+        Variable *v = &ctx->vars[s->var_ids[i]];
+        sum_lo += (int64_t)v->lo;
+        sum_hi += (int64_t)v->hi;
+    }
+
+    /* Forward: tighten result bounds */
+    PropResult r;
+    if ((r = ctx_tighten_lb32(ctx, rid, (int32_t)(sum_lo > INT32_MIN ? sum_lo : INT32_MIN))) != PROP_OK) return r;
+    if ((r = ctx_tighten_ub32(ctx, rid, (int32_t)(sum_hi < INT32_MAX ? sum_hi : INT32_MAX))) != PROP_OK) return r;
+
+    /* Backward: for each summand i, tighten using
+     *   xi_lo >= result_lo - sum_of_others_hi
+     *   xi_hi <= result_hi - sum_of_others_lo */
+    Variable *rv = &ctx->vars[rid];
+    int64_t r_lo = (int64_t)rv->lo;
+    int64_t r_hi = (int64_t)rv->hi;
+
+    for (uint32_t i = 1; i < n; i++) {
+        /* sum of all OTHER summands' bounds */
+        int64_t others_lo = sum_lo - (int64_t)ctx->vars[s->var_ids[i]].lo;
+        int64_t others_hi = sum_hi - (int64_t)ctx->vars[s->var_ids[i]].hi;
+
+        int64_t new_lo = r_lo - others_hi;
+        int64_t new_hi = r_hi - others_lo;
+
+        if (new_lo > INT32_MIN) {
+            if ((r = ctx_tighten_lb32(ctx, s->var_ids[i], (int32_t)new_lo)) != PROP_OK) return r;
+        }
+        if (new_hi < INT32_MAX) {
+            if ((r = ctx_tighten_ub32(ctx, s->var_ids[i], (int32_t)new_hi)) != PROP_OK) return r;
+        }
+    }
+
+    return PROP_OK;
+}
+
+uint32_t prop_add_sum_eq_32(SolveCtx *ctx, uint32_t result_id,
+                             uint32_t n_summands, const uint32_t *summand_ids,
+                             uint8_t priority) {
+    if (n_summands < 1 || n_summands > MAX_SUM_VARS) return EXPR_NULL;
+
+    uint32_t n_total = 1 + n_summands;  /* result + summands */
+
+    uint32_t ref = zsp_pool_alloc(&ctx->pool, (uint32_t)sizeof(SumEq_32_t), 8u);
+    if (ref == EXPR_NULL) return EXPR_NULL;
+
+    SumEq_32_t *s = (SumEq_32_t *)zsp_pool_ptr(&ctx->pool, ref);
+    memset(s, 0, sizeof(SumEq_32_t));
+
+    s->hdr.fire       = _fire_sum_eq_32;
+    s->hdr.queue_next = EXPR_NULL;
+    s->hdr.prop_id    = (uint16_t)ctx->n_props++;
+    s->hdr.priority   = priority;
+    s->hdr.flags      = PROP_FLAG_WIDE_WATCH;
+    s->n_vars         = n_total;
+    s->_capacity      = MAX_SUM_VARS + 1;
+
+    s->var_ids[0] = result_id;
+    for (uint32_t i = 0; i < n_summands; i++) {
+        s->var_ids[1 + i] = summand_ids[i];
+    }
+
+    /* Register watchers */
+    for (uint32_t i = 0; i < n_total; i++) {
+        uint32_t vid = s->var_ids[i];
+        s->watcher_nexts[i]     = ctx->watcher_heads[vid];
+        ctx->watcher_heads[vid] = ref;
+    }
+
+    prop_enqueue(ctx, ref);
+
+    if (ctx->prop_refs && s->hdr.prop_id < ctx->n_prop_refs_capacity)
+        ctx->prop_refs[s->hdr.prop_id] = ref;
+
+    return ref;
+}
+
+/* ------------------------------------------------------------------ */
+/* Countones_32: result == popcount(operand)                           */
+/* ------------------------------------------------------------------ */
+
+static int _popcount32(uint32_t v) {
+    v = v - ((v >> 1) & 0x55555555u);
+    v = (v & 0x33333333u) + ((v >> 2) & 0x33333333u);
+    return (int)(((v + (v >> 4)) & 0x0F0F0F0Fu) * 0x01010101u >> 24);
+}
+
+static PropResult _fire_countones_32(Propagator *self, SolveCtx *ctx) {
+    PropWatchSect *ws = PROP_WS(self);
+    uint32_t rid = ws->var_ids[0];  /* result */
+    uint32_t xid = ws->var_ids[1];  /* operand */
+    Variable *rv = &ctx->vars[rid];
+    Variable *xv = &ctx->vars[xid];
+
+    uint16_t width = xv->width;
+    if (width > 32) width = 32;
+
+    PropResult r;
+
+    /* Forward: bound result from operand's domain */
+    if (xv->lo == xv->hi) {
+        /* Operand is singleton: result is exact popcount */
+        int pc = _popcount32((uint32_t)xv->lo & ((width < 32) ? ((1u << width) - 1) : 0xFFFFFFFFu));
+        if ((r = ctx_tighten_lb32(ctx, rid, pc)) != PROP_OK) return r;
+        if ((r = ctx_tighten_ub32(ctx, rid, pc)) != PROP_OK) return r;
+    } else {
+        /* Coarse bounds: min popcount >= popcount(bits that must be 1),
+         * max popcount <= width - count of bits that must be 0 */
+        uint32_t mask = (width < 32) ? ((1u << width) - 1) : 0xFFFFFFFFu;
+        uint32_t must_1 = (uint32_t)xv->lo & (uint32_t)xv->hi & mask;  /* approximate */
+        int min_pc = _popcount32(must_1);
+        if ((r = ctx_tighten_lb32(ctx, rid, min_pc)) != PROP_OK) return r;
+        if ((r = ctx_tighten_ub32(ctx, rid, (int32_t)width)) != PROP_OK) return r;
+    }
+
+    /* Backward: bound operand from result */
+    if (rv->lo == rv->hi) {
+        int32_t k = rv->lo;
+        if (k < 0 || k > (int32_t)width) return PROP_CONFLICT;
+        if (k == 0) {
+            if ((r = ctx_tighten_lb32(ctx, xid, 0)) != PROP_OK) return r;
+            if ((r = ctx_tighten_ub32(ctx, xid, 0)) != PROP_OK) return r;
+        } else if (k == (int32_t)width) {
+            uint32_t mask = (width < 32) ? ((1u << width) - 1) : 0xFFFFFFFFu;
+            if ((r = ctx_tighten_lb32(ctx, xid, (int32_t)mask)) != PROP_OK) return r;
+            if ((r = ctx_tighten_ub32(ctx, xid, (int32_t)mask)) != PROP_OK) return r;
+        } else if (k > 0 && k <= (int32_t)width) {
+            /* min x with popcount k: lowest k bits set = (1<<k)-1 */
+            uint32_t min_x = (uint32_t)((1u << k) - 1);
+            /* max x with popcount k: highest k bits set (within width) */
+            uint32_t max_x = (width < 32)
+                ? (uint32_t)(((1u << k) - 1) << (width - (uint16_t)k))
+                : (uint32_t)(((1u << k) - 1) << (32 - k));
+            if ((r = ctx_tighten_lb32(ctx, xid, (int32_t)min_x)) != PROP_OK) return r;
+            if ((r = ctx_tighten_ub32(ctx, xid, (int32_t)max_x)) != PROP_OK) return r;
+        }
+    } else {
+        /* result_lo > 0 means operand cannot be 0 */
+        if (rv->lo > 0) {
+            if ((r = ctx_tighten_lb32(ctx, xid, 1)) != PROP_OK) return r;
+        }
+        /* result_hi < width means not all bits can be set */
+        if (rv->hi < (int32_t)width && rv->hi >= 0) {
+            /* max x with at most rv->hi bits set */
+            uint32_t max_bits = (uint32_t)rv->hi;
+            uint32_t max_x = (width < 32)
+                ? (uint32_t)(((1u << max_bits) - 1) << (width - (uint16_t)max_bits))
+                : (uint32_t)(((1u << max_bits) - 1) << (32 - max_bits));
+            if ((r = ctx_tighten_ub32(ctx, xid, (int32_t)max_x)) != PROP_OK) return r;
+        }
+    }
+
+    return PROP_OK;
+}
+
+uint32_t prop_add_countones_32(SolveCtx *ctx, uint32_t result_id,
+                                uint32_t operand_id, uint8_t priority) {
+    uint32_t ids[2] = { result_id, operand_id };
+    return _alloc_prop(ctx, _fire_countones_32, priority, 2, ids,
+                       sizeof(Countones_32_t));
+}
+
+/* ------------------------------------------------------------------ */
+/* Clog2_32: result == ceil(log2(operand))                             */
+/* ------------------------------------------------------------------ */
+
+static int32_t _clog2_32(uint32_t v) {
+    if (v <= 1) return 0;
+    int32_t r = 0;
+    uint32_t t = v - 1;
+    while (t) { r++; t >>= 1; }
+    return r;
+}
+
+static PropResult _fire_clog2_32(Propagator *self, SolveCtx *ctx) {
+    PropWatchSect *ws = PROP_WS(self);
+    uint32_t rid = ws->var_ids[0];  /* result */
+    uint32_t xid = ws->var_ids[1];  /* operand */
+    Variable *rv = &ctx->vars[rid];
+    Variable *xv = &ctx->vars[xid];
+
+    PropResult r;
+
+    /* Guard: operand must be > 0 for clog2 to be defined */
+    if ((r = ctx_tighten_lb32(ctx, xid, 1)) != PROP_OK) return r;
+
+    /* Forward: clog2 is monotonically non-decreasing */
+    int32_t clog_lo = _clog2_32((uint32_t)xv->lo);
+    int32_t clog_hi = _clog2_32((uint32_t)xv->hi);
+    if ((r = ctx_tighten_lb32(ctx, rid, clog_lo)) != PROP_OK) return r;
+    if ((r = ctx_tighten_ub32(ctx, rid, clog_hi)) != PROP_OK) return r;
+
+    /* Backward: if result is singleton k, tighten operand range */
+    if (rv->lo == rv->hi) {
+        int32_t k = rv->lo;
+        if (k == 0) {
+            /* clog2(x) == 0 -> x == 1 */
+            if ((r = ctx_tighten_lb32(ctx, xid, 1)) != PROP_OK) return r;
+            if ((r = ctx_tighten_ub32(ctx, xid, 1)) != PROP_OK) return r;
+        } else if (k > 0 && k < 31) {
+            /* clog2(x) == k -> x in [(1 << (k-1)) + 1, 1 << k] */
+            int32_t x_lo = (1 << (k - 1)) + 1;
+            int32_t x_hi = (1 << k);
+            if ((r = ctx_tighten_lb32(ctx, xid, x_lo)) != PROP_OK) return r;
+            if ((r = ctx_tighten_ub32(ctx, xid, x_hi)) != PROP_OK) return r;
+        }
+    }
+
+    return PROP_OK;
+}
+
+uint32_t prop_add_clog2_32(SolveCtx *ctx, uint32_t result_id,
+                            uint32_t operand_id, uint8_t priority) {
+    uint32_t ids[2] = { result_id, operand_id };
+    return _alloc_prop(ctx, _fire_clog2_32, priority, 2, ids,
+                       sizeof(Clog2_32_t));
 }
