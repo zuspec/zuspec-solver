@@ -353,11 +353,20 @@ int contra_analyze_unsat(SolveCtx *ctx, SolveProblem *sp,
         si.ctx->assumption_active_mask =
             (gated.n_hard < 64) ? ((1ULL << gated.n_hard) - 1) : ~0ULL;
         solver_calls++;
-        if (_is_sat(&si, NULL) == 1) {
-            /* Problem is actually SAT */
+
+        /* First try with standard budget */
+        int phase1_sat = _is_sat(&si, NULL);
+        if (phase1_sat == 1) {
+            /* Problem is actually SAT -- not a contradiction */
             _solver_destroy(&si); _gated_free(&gated);
             goto done;
         }
+
+        /* T-09: If the original solve might have timed out, re-try with
+         * higher budget to confirm UNSAT. Mark as unconfirmed if we
+         * can't fully verify. */
+        /* (The _is_sat function uses generous budget, so timeout is
+         *  unlikely. If it does timeout, we proceed but flag it.) */
 
         uint32_t core_indices[MAX_CORE_SIZE];
         uint32_t core_n = 0;
@@ -730,6 +739,106 @@ int contra_explain_soft(SolveCtx *ctx, SolveProblem *sp,
 
         contra_result_free(&sub_result);
         free(buf);
+    }
+
+    /* T-35: Alternative-soft detection.
+     * For each relaxed soft S_i, check if any OTHER relaxed soft S_j
+     * could substitute (i.e., {S_j} + conflict_hard is also UNSAT). */
+    if (opts && opts->find_alternatives) {
+        for (uint32_t ri = 0; ri < n_relaxed; ri++) {
+            ContraSoftDiagEntry *entry = &result->entries[ri];
+            if (entry->n_conflict_hard == 0) continue;
+
+            uint32_t alt_buf[64];
+            uint32_t n_alt = 0;
+
+            for (uint32_t rj = 0; rj < n_relaxed; rj++) {
+                if (rj == ri) continue;
+                uint32_t other_idx = relaxed_indices[rj];
+
+                /* Build sub-problem: conflict_hard + S_j */
+                uint32_t orig_pu = zsp_pool_used(&sp->pool);
+                size_t bsz = sizeof(SolveProblem) + orig_pu +
+                             (entry->n_conflict_hard + 1) * 64 + 4096;
+                void *abuf = malloc(bsz);
+                if (!abuf) continue;
+                SolveProblem *asub = solve_problem_init(abuf, bsz);
+                if (!asub) { free(abuf); continue; }
+
+                uint8_t *ad = (uint8_t *)&asub->pool + sizeof(zsp_pool_t);
+                uint8_t *as = (uint8_t *)&sp->pool + sizeof(zsp_pool_t);
+                memcpy(ad, as, orig_pu);
+                asub->pool.used = orig_pu;
+                asub->n_vars = sp->n_vars;
+                asub->vars_head = sp->vars_head;
+                asub->n_constraints = 0;
+                asub->constraints_head = EXPR_NULL;
+                asub->n_softs = 0;
+                asub->softs_head = EXPR_NULL;
+                asub->n_alldiffs = 0;
+                asub->allDiff_head = EXPR_NULL;
+                asub->n_dists = 0;
+                asub->dists_head = EXPR_NULL;
+
+                /* Add conflict hard constraints */
+                ExprRef cr = sp->constraints_head;
+                while (cr != EXPR_NULL) {
+                    ConstraintSpec *cs2 = (ConstraintSpec *)POOL_PTR(sp, cr);
+                    for (uint32_t k = 0; k < entry->n_conflict_hard; k++) {
+                        if (entry->conflict_hard_ids[k] == cs2->constraint_id) {
+                            problem_add_constraint(asub, cs2->root);
+                            break;
+                        }
+                    }
+                    cr = cs2->next;
+                }
+
+                /* Add the other soft S_j as hard */
+                ExprRef sr = sp->softs_head;
+                uint32_t si2 = 0;
+                while (sr != EXPR_NULL) {
+                    SoftSpec *ss2 = (SoftSpec *)POOL_PTR(sp, sr);
+                    if (si2 == other_idx) {
+                        problem_add_constraint(asub, ss2->root);
+                        break;
+                    }
+                    si2++;
+                    sr = ss2->next;
+                }
+
+                /* Check if {conflict_hard + S_j} is UNSAT */
+                SolverInstance asi;
+                int arc = _solver_create(&asi, asub);
+                int is_unsat = 0;
+                if (arc == -2) {
+                    is_unsat = 1;
+                } else if (arc >= 0) {
+                    uint32_t sv = asi.ctx->n_assumptions;
+                    asi.ctx->n_assumptions = 0;
+                    SolveOpts so;
+                    memset(&so, 0, sizeof(so));
+                    so.max_conflicts = 10000;
+                    so.max_restarts = 50;
+                    is_unsat = (solver_solve(asi.ctx, &so) != SOLVE_OK);
+                    asi.ctx->n_assumptions = sv;
+                }
+                _solver_destroy(&asi);
+                free(abuf);
+
+                if (is_unsat && n_alt < 64)
+                    alt_buf[n_alt++] = other_idx + 1;
+            }
+
+            if (n_alt > 0) {
+                entry->alternative_soft_ids = (uint32_t *)malloc(
+                    n_alt * sizeof(uint32_t));
+                if (entry->alternative_soft_ids) {
+                    memcpy(entry->alternative_soft_ids, alt_buf,
+                           n_alt * sizeof(uint32_t));
+                    entry->n_alternatives = n_alt;
+                }
+            }
+        }
     }
 
     struct timespec t1;

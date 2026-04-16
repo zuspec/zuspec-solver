@@ -2,6 +2,8 @@
 #include <string.h>
 #include "zsp_propagator.h"
 #include "zsp_ctx.h"
+#include "zsp_lcg.h"
+#include "zsp_explain.h"
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
@@ -2075,4 +2077,71 @@ uint32_t prop_add_clog2_32(SolveCtx *ctx, uint32_t result_id,
     uint32_t ids[2] = { result_id, operand_id };
     return _alloc_prop(ctx, _fire_clog2_32, priority, 2, ids,
                        sizeof(Clog2_32_t));
+}
+
+/* ------------------------------------------------------------------ */
+/* contra_register_explanations -- walk all propagators and set        */
+/* explain callbacks based on fire function pointer lookup.            */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    PropResult (*fire)(Propagator *, SolveCtx *);
+    int (*explain)(Propagator *, SolveCtx *, uint32_t, uint8_t, int64_t, Explanation *);
+} ExplainEntry;
+
+void contra_register_explanations(SolveCtx *ctx) {
+    static const ExplainEntry table[] = {
+        { _fire_bounds_le_32,       explain_bounds_le },
+        { _fire_bounds_lt_32,       explain_bounds_lt },
+        { _fire_bounds_eq_32,       explain_bounds_eq },
+        { _fire_bounds_ne_32,       explain_bounds_ne },
+        { _fire_bounds_add_32,      explain_bounds_add },
+        { _fire_bounds_mul_32,      explain_bounds_mul },
+        { _fire_bounds_div_32,      explain_bounds_div },
+        { _fire_bounds_mod_32,      explain_bounds_mod },
+        { _fire_unary_neg_32,       explain_unary_neg },
+        { _fire_in_set_32,          explain_in_set },
+        { _fire_implication_32,     explain_implication },
+        { _fire_reification_32,     explain_reification },
+        { _fire_reification_eq_32,  explain_reification_eq },
+        { _fire_bit_slice_32,       explain_bit_slice },
+        { _fire_bounds_le_64,       explain_bounds_le },
+        { _fire_bounds_lt_64,       explain_bounds_lt },
+        { _fire_bounds_eq_64,       explain_bounds_eq },
+        { _fire_bounds_ne_64,       explain_bounds_ne },
+        { _fire_bounds_add_64,      explain_bounds_add },
+        { _fire_bounds_mul_64,      explain_bounds_mul },
+        { _fire_bounds_div_64,      explain_bounds_div },
+        { _fire_bounds_mod_64,      explain_bounds_mod },
+        { _fire_unary_neg_64,       explain_unary_neg },
+        { _fire_ite_value_64,       explain_ite_value },
+        { _fire_in_set_64,          explain_in_set },
+        { _fire_bit_slice_64,       explain_bit_slice },
+        { _fire_bounds_band_64,     explain_bounds_band },
+        { _fire_bounds_bor_64,      explain_bounds_bor },
+        { _fire_bounds_bxor_64,     explain_bounds_bxor },
+        { _fire_bounds_bnot_64,     explain_bounds_bnot },
+        { _fire_bounds_shl_64,      explain_bounds_shl },
+        { _fire_bounds_lshr_64,     explain_bounds_lshr },
+        { _fire_bounds_concat_64,   explain_bounds_concat },
+        { _fire_disj_clause,        explain_disj_clause },
+        { _fire_all_different_32,   explain_all_different },
+        { _fire_sum_eq_32,          explain_sum_eq },
+        { _fire_countones_32,       explain_countones },
+        { _fire_clog2_32,           explain_clog2 },
+    };
+    static const uint32_t n_entries = sizeof(table) / sizeof(table[0]);
+
+    for (uint32_t pi = 0; pi < ctx->n_props; pi++) {
+        if (ctx->prop_refs[pi] == EXPR_NULL) continue;
+        Propagator *p = (Propagator *)zsp_pool_ptr(&ctx->pool, ctx->prop_refs[pi]);
+        if (p->explain) continue;  /* already set */
+
+        for (uint32_t j = 0; j < n_entries; j++) {
+            if (p->fire == table[j].fire) {
+                p->explain = table[j].explain;
+                break;
+            }
+        }
+    }
 }
