@@ -8,11 +8,48 @@ from __future__ import annotations
 import warnings
 from typing import Any, Dict, Optional, Tuple
 
-# Per-class cache: type → (ConstraintSystem, SolveProblem, var_id_map)
+# Per-class cache: type -> (ConstraintSystem, SolveProblem, var_id_map, fully_native)
 # Keyed by the Python class object so each distinct @dataclass gets one entry.
 # The constraint system is deterministic for a given class; caching it avoids
 # re-parsing source, rebuilding the IR, and re-translating on every solve call.
 _CLASS_CACHE: Dict[type, Tuple] = {}
+
+# Constraint-template cache: reuse compiled SolveCtx across invocations
+# of the same action type. Keyed by type -> (SolveCtx, problem_buf).
+# Uses LRU eviction with a configurable max size.
+_CTX_CACHE_MAX = 32
+_CTX_CACHE: Dict[type, Tuple] = {}
+_CTX_CACHE_ORDER: list = []  # LRU order (most recent at end)
+
+
+def _ctx_cache_get(cls: type) -> Optional[Tuple]:
+    """Retrieve a cached SolveCtx for cls, updating LRU order."""
+    entry = _CTX_CACHE.get(cls)
+    if entry is not None:
+        # Move to end (most recently used)
+        if cls in _CTX_CACHE_ORDER:
+            _CTX_CACHE_ORDER.remove(cls)
+        _CTX_CACHE_ORDER.append(cls)
+    return entry
+
+
+def _ctx_cache_put(cls: type, entry: Tuple) -> None:
+    """Store a SolveCtx in the cache, evicting LRU if full."""
+    if cls not in _CTX_CACHE:
+        if len(_CTX_CACHE) >= _CTX_CACHE_MAX:
+            # Evict least recently used
+            evict = _CTX_CACHE_ORDER.pop(0)
+            old_entry = _CTX_CACHE.pop(evict, None)
+            if old_entry is not None:
+                # Destroy the cached context
+                ctx_obj = old_entry[0]
+                if hasattr(ctx_obj, 'destroy'):
+                    ctx_obj.destroy()
+    else:
+        if cls in _CTX_CACHE_ORDER:
+            _CTX_CACHE_ORDER.remove(cls)
+    _CTX_CACHE[cls] = entry
+    _CTX_CACHE_ORDER.append(cls)
 
 
 class NativeSolverBackend:
@@ -71,9 +108,10 @@ class NativeSolverBackend:
 
                 translator = IRTranslator()
                 try:
-                    sp, var_id_map = translator.translate(system)
+                    builder, var_id_map = translator.translate(system)
+                    problem_buf, _buf_size = builder.finalize()
                 except TranslationError as exc:
-                    # Translation failed — fall back to Python, but don't cache
+                    # Translation failed -- fall back to Python, but don't cache
                     # so that each call re-tries (in case the error is transient).
                     warnings.warn(
                         f"Native solver: translation failed ({exc}); falling back to Python",
@@ -87,9 +125,9 @@ class NativeSolverBackend:
 
                 # Test-compile once to detect unsupported constraints before caching.
                 try:
-                    _probe = SolveCtx(sp)
+                    _probe = SolveCtx(problem_buf)
                     _probe.destroy()
-                    cache_entry = (system, sp, var_id_map, True)  # True = fully native
+                    cache_entry = (system, problem_buf, var_id_map, True)  # True = fully native
                 except CompileUnsatError:
                     raise RandomizationError(
                         "No solution found: constraints are unsatisfiable"
@@ -99,11 +137,11 @@ class NativeSolverBackend:
                         f"Native solver: {exc}; falling back to Python",
                         stacklevel=3,
                     )
-                    cache_entry = (system, sp, var_id_map, False)  # False = needs Python
+                    cache_entry = (system, problem_buf, var_id_map, False)  # False = needs Python
 
                 _CLASS_CACHE[cls] = cache_entry
 
-            system, sp, var_id_map, fully_native = cache_entry
+            system, problem_buf, var_id_map, fully_native = cache_entry
 
             # ---- Python fallback path (cached) ---------------------------
             if not fully_native:
@@ -115,7 +153,7 @@ class NativeSolverBackend:
 
             # ---- Native solve path (hot path) ----------------------------
             try:
-                ctx_mgr = SolveCtx(sp)
+                ctx_mgr = SolveCtx(problem_buf)
             except CompileUnsatError:
                 raise RandomizationError(
                     "No solution found: constraints are unsatisfiable"

@@ -170,6 +170,16 @@ void trail_backtrack(SolveCtx *ctx, uint32_t target_level) {
     ctx->trail_count    = mark->trail_count;
     ctx->decision_level = target_level;
 
+    /* Rebuild unassigned_mask from restored domains */
+    if (ctx->n_vars <= 64) {
+        uint64_t mask = 0;
+        for (uint32_t i = 0; i < ctx->n_vars; i++) {
+            if (var_lo64(ctx, &ctx->vars[i]) != var_hi64(ctx, &ctx->vars[i]))
+                mask |= (1ULL << i);
+        }
+        ctx->unassigned_mask = mask;
+    }
+
     /* Clear the propagation queue — any entries left from the conflicting
      * level are stale (they reference tightened domains that have been
      * restored).  Clear IN_QUEUE flags too so propagators can be re-woken. */

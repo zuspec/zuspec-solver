@@ -32,8 +32,8 @@ if TYPE_CHECKING:
     from zuspec.dataclasses.solver.core.constraint_system import ConstraintSystem
     from zuspec.dataclasses.solver.core.constraint import Constraint
 
+from .builder import SolveProblemBuilder
 from .problem import (
-    SolveProblem,
     EXPR_NULL,
     BIN_ADD, BIN_SUB, BIN_MUL, BIN_DIV, BIN_MOD,
     BIN_BAND, BIN_BOR, BIN_BXOR, BIN_LSHIFT, BIN_RSHIFT,
@@ -52,6 +52,7 @@ _BINOP_MAP: Dict[BinOp, int] = {
     BinOp.Mult:    BIN_MUL,
     BinOp.Div:     BIN_DIV,
     BinOp.Mod:     BIN_MOD,
+    BinOp.FloorDiv: BIN_DIV,
     BinOp.BitAnd:  BIN_BAND,
     BinOp.BitOr:   BIN_BOR,
     BinOp.BitXor:  BIN_BXOR,
@@ -102,7 +103,7 @@ class IRTranslator:
         self,
         system: "ConstraintSystem",
         buf_size: int = 65536,
-    ) -> Tuple[SolveProblem, Dict[str, int]]:
+    ) -> Tuple["SolveProblemBuilder", Dict[str, int]]:
         """Translate *system* into a ``SolveProblem``.
 
         Returns:
@@ -113,7 +114,7 @@ class IRTranslator:
             TranslationError: When a constraint or domain type cannot be
                 translated to the native C representation.
         """
-        sp = SolveProblem(buf_size=buf_size)
+        sp = SolveProblemBuilder(block_size=4096)
         self._system = system
         self._next_tmp = 0
         # Assign deterministic IDs (sorted by name)
@@ -127,7 +128,7 @@ class IRTranslator:
             ref = sp.add_var(vid, width=width, is_signed=is_signed, lo=lo, hi=hi)
             if ref == EXPR_NULL:
                 raise TranslationError(
-                    f"SolveProblem buffer overflow while adding variable '{name}'"
+                    f"Builder allocation failed for variable '{name}'"
                 )
 
         # Add randc exclusion constraints (before compile)
@@ -231,6 +232,28 @@ class IRTranslator:
                     raise TranslationError(f"Unsupported CmpOp: {constraint.op}")
                 sp.add_constraint(sp.expr_binary(cbin, tmp_ref, rhs_ref))
                 return
+
+        # ImplicationConstraint → ITE at constraint root
+        # if(cond) then_constraint; [else else_constraint]
+        if isinstance(constraint, ImplicationConstraint):
+            cond_ref = self._translate_expr(sp, var_id_map, constraint.condition)
+            then_ref = self._translate_expr(sp, var_id_map, constraint.then_constraint)
+            if constraint.else_constraint is not None:
+                else_ref = self._translate_expr(sp, var_id_map, constraint.else_constraint)
+            else:
+                # No else: use a trivially-true const (1)
+                else_ref = sp.expr_const(1, 0)
+            ite_ref = sp.expr_ite(cond_ref, then_ref, else_ref)
+            sp.add_constraint(ite_ref)
+            return
+
+        # UniqueConstraint → AllDifferent (handled directly, not via _translate_expr)
+        if isinstance(constraint, UniqueConstraint):
+            vids = [var_id_map[v.name] for v in constraint.unique_variables
+                    if v.name in var_id_map]
+            if len(vids) >= 2:
+                sp.add_all_different(vids)
+            return
 
         ref = self._translate_expr(sp, var_id_map, constraint)
         if ref == EXPR_NULL:
@@ -343,7 +366,7 @@ class IRTranslator:
 
         if isinstance(constraint, UniqueConstraint):
             raise TranslationError(
-                "UniqueConstraint is not yet supported by the native back-end"
+                "UniqueConstraint should be handled in _add_constraint, not _translate_expr"
             )
 
         raise TranslationError(

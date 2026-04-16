@@ -113,7 +113,8 @@ class TestConstraintTranslation:
         sp, var_id_map = translator.translate(sys)
 
         from zuspec.solver.ctx import SolveCtx, SOLVE_OK
-        with SolveCtx(sp) as ctx:
+        buf, _ = sp.finalize()
+        with SolveCtx(buf) as ctx:
             assert ctx.solve(seed=1) == SOLVE_OK
             assert ctx.get_value(var_id_map["x"]) == ctx.get_value(var_id_map["y"])
 
@@ -133,7 +134,8 @@ class TestConstraintTranslation:
         sp, var_id_map = translator.translate(sys)
 
         from zuspec.solver.ctx import SolveCtx, SOLVE_OK
-        with SolveCtx(sp) as ctx:
+        buf, _ = sp.finalize()
+        with SolveCtx(buf) as ctx:
             assert ctx.solve(seed=1) == SOLVE_OK
             xv = ctx.get_value(var_id_map["x"])
             yv = ctx.get_value(var_id_map["y"])
@@ -154,7 +156,8 @@ class TestConstraintTranslation:
         sp, var_id_map = translator.translate(sys)
 
         from zuspec.solver.ctx import SolveCtx, SOLVE_OK
-        with SolveCtx(sp) as ctx:
+        buf, _ = sp.finalize()
+        with SolveCtx(buf) as ctx:
             assert ctx.solve(seed=1) == SOLVE_OK
             assert ctx.get_value(var_id_map["x"]) == 42
 
@@ -177,7 +180,8 @@ class TestConstraintTranslation:
         sp, var_id_map = translator.translate(sys)
 
         from zuspec.solver.ctx import SolveCtx, SOLVE_OK
-        with SolveCtx(sp) as ctx:
+        buf, _ = sp.finalize()
+        with SolveCtx(buf) as ctx:
             assert ctx.solve(seed=1) == SOLVE_OK
             rv = ctx.get_value(var_id_map["r"])
             xv = ctx.get_value(var_id_map["x"])
@@ -203,7 +207,8 @@ class TestConstraintTranslation:
         sp, var_id_map = translator.translate(sys)
 
         from zuspec.solver.ctx import SolveCtx, SOLVE_OK
-        with SolveCtx(sp) as ctx:
+        buf, _ = sp.finalize()
+        with SolveCtx(buf) as ctx:
             assert ctx.solve(seed=1) == SOLVE_OK
             xv = ctx.get_value(var_id_map["x"])
             assert 5 <= xv <= 15, f"Expected 5<=x<=15, got x={xv}"
@@ -225,7 +230,8 @@ class TestConstraintTranslation:
         sp, var_id_map = translator.translate(sys)
 
         from zuspec.solver.ctx import SolveCtx, SOLVE_OK
-        with SolveCtx(sp) as ctx:
+        buf, _ = sp.finalize()
+        with SolveCtx(buf) as ctx:
             assert ctx.solve(seed=1) == SOLVE_OK
             av = ctx.get_value(var_id_map["a"])
             bv = ctx.get_value(var_id_map["b"])
@@ -245,7 +251,8 @@ class TestConstraintTranslation:
         # Structural test: SolveProblem built without overflow
         assert sp is not None
 
-    def test_unsupported_unique_raises(self, lib_path):
+    def test_unique_constraint_translated(self, lib_path):
+        """UniqueConstraint is now translated to AllDifferent."""
         _make_lib_available(lib_path)
         x = _make_var("x", 0, 10)
         y = _make_var("y", 0, 10)
@@ -253,8 +260,8 @@ class TestConstraintTranslation:
         sys.add_constraint(UniqueConstraint(variables=[x, y]))
 
         translator = IRTranslator()
-        with pytest.raises(TranslationError, match="UniqueConstraint"):
-            translator.translate(sys)
+        sp, var_id_map = translator.translate(sys)
+        # Should not raise; AllDifferent is now supported
 
 
 # ------------------------------------------------------------------ #
