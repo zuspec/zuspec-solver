@@ -207,8 +207,10 @@ typedef struct {
  * Lives in the problem pool; linked via `next`.
  */
 typedef struct {
-    ExprRef  next;  /* next ConstraintSpec, or EXPR_NULL */
-    ExprRef  root;  /* root ExprRef of the expression    */
+    ExprRef  next;           /* next ConstraintSpec, or EXPR_NULL */
+    ExprRef  root;           /* root ExprRef of the expression    */
+    uint32_t constraint_id;  /* user-assigned or auto-incremented ID */
+    uint32_t _cs_pad;        /* pad to 16-byte alignment */
 } ConstraintSpec;
 
 /**
@@ -240,6 +242,7 @@ typedef struct {
     ExprRef  next;       /* next SoftSpec, or EXPR_NULL */
     ExprRef  root;       /* root ExprRef of the constraint expression */
     uint32_t priority;   /* 0 = highest priority, larger = relaxed first */
+    uint32_t constraint_id;  /* user-assigned or auto-incremented ID */
 } SoftSpec;
 
 /**

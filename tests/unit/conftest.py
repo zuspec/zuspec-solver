@@ -55,6 +55,34 @@ def _build_library(build_dir: Path) -> Path:
 _lib_cache: dict = {}
 
 
+def _build_debug_library(build_dir: Path) -> Path:
+    """Build libzsp_solver_debug.so with contradiction analysis enabled."""
+    build_dir.mkdir(parents=True, exist_ok=True)
+
+    subprocess.run(
+        ["cmake", str(_PKG_DIR), "-DCMAKE_BUILD_TYPE=Release",
+         "-DZSP_CONTRADICTION_ANALYSIS=ON"],
+        cwd=build_dir,
+        check=True,
+        capture_output=True,
+    )
+
+    subprocess.run(
+        ["cmake", "--build", str(build_dir), "--target", "zsp_solver_debug",
+         "--parallel"],
+        check=True,
+        capture_output=True,
+    )
+
+    candidates = list(build_dir.glob("libzsp_solver_debug.so*"))
+    if not candidates:
+        raise FileNotFoundError(
+            f"libzsp_solver_debug.so not found in {build_dir} after build"
+        )
+    candidates.sort(key=lambda p: len(p.name))
+    return candidates[0]
+
+
 @pytest.fixture(scope="session")
 def libzsp(tmp_path_factory):
     """Session-scoped fixture that builds and loads libzsp_solver.so.
@@ -72,6 +100,27 @@ def libzsp(tmp_path_factory):
         lib_path = _build_library(build_dir)
     except Exception as exc:
         pytest.skip(f"libzsp_solver build failed: {exc}")
+
+    lib = ctypes.CDLL(str(lib_path))
+    yield lib
+
+
+@pytest.fixture(scope="session")
+def libzsp_debug(tmp_path_factory):
+    """Session-scoped fixture that builds and loads libzsp_solver_debug.so.
+
+    This library always has ZSP_CONTRADICTION_ANALYSIS=ON.
+    """
+    if not shutil.which("cmake"):
+        pytest.skip("cmake not found")
+    if not shutil.which("gcc") and not shutil.which("cc"):
+        pytest.skip("C compiler not found")
+
+    build_dir = tmp_path_factory.mktemp("zsp_build_debug")
+    try:
+        lib_path = _build_debug_library(build_dir)
+    except Exception as exc:
+        pytest.skip(f"libzsp_solver_debug build failed: {exc}")
 
     lib = ctypes.CDLL(str(lib_path))
     yield lib

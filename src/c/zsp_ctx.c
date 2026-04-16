@@ -39,6 +39,7 @@ SolveCtx *solver_create(void *static_buf, size_t static_size,
     ctx->n_checkpoints   = 0;
     ctx->prop_refs       = NULL;
     ctx->n_prop_refs_capacity = 0;
+    ctx->prop_constraint_id = NULL;
     ctx->decisions       = NULL;
     ctx->phase_save      = NULL;
     ctx->unassigned_mask = 0;
@@ -48,6 +49,15 @@ SolveCtx *solver_create(void *static_buf, size_t static_size,
     ctx->assumption_active_mask = 0;
     ctx->_pad            = 0;
     ctx->var_alias       = NULL;
+    ctx->value_selector  = NULL;
+    ctx->value_selector_data = NULL;
+    ctx->current_prop_ref = EXPR_NULL;
+    ctx->_lcg_pad        = 0;
+    ctx->lcg_ctx         = NULL;
+    ctx->conflict_prop_ref = EXPR_NULL;
+    ctx->_conflict_pad   = 0;
+    ctx->contra_ctx      = NULL;
+    ctx->contra_hooks    = NULL;
 
     /* Init PropQueue — all levels empty */
     ctx->queue.non_empty_mask = 0;
@@ -130,4 +140,9 @@ uint32_t zsp_ctx_decision_level(const SolveCtx *ctx) {
 
 uint64_t zsp_ctx_trail_count(const SolveCtx *ctx) {
     return ctx->trail_count;
+}
+
+uint32_t zsp_prop_constraint_id(const SolveCtx *ctx, uint32_t prop_idx) {
+    if (!ctx->prop_constraint_id || prop_idx >= ctx->n_props) return 0;
+    return ctx->prop_constraint_id[prop_idx];
 }

@@ -1369,6 +1369,14 @@ int solver_compile(SolveCtx *ctx, SolveProblem *sp) {
     ctx->prop_guard_vars = (uint32_t *)zsp_pool_ptr(&ctx->pool, gv_ref);
     for (uint32_t i = 0; i < pr_cap; i++) ctx->prop_guard_vars[i] = EXPR_NULL;
 
+    /* ---- Allocate prop_constraint_id side table ---- */
+    uint32_t pc_ref = zsp_pool_alloc(&ctx->pool,
+                                      pr_cap * (uint32_t)sizeof(uint32_t),
+                                      (uint32_t)_Alignof(uint32_t));
+    if (pc_ref == EXPR_NULL) return -1;
+    ctx->prop_constraint_id = (uint32_t *)zsp_pool_ptr(&ctx->pool, pc_ref);
+    for (uint32_t i = 0; i < pr_cap; i++) ctx->prop_constraint_id[i] = 0;
+
     /* ---- Build var alias table (union-find for BIN_EQ(var,var)) ---- */
     {
         uint32_t al_ref = zsp_pool_alloc(&ctx->pool,
@@ -1424,9 +1432,15 @@ int solver_compile(SolveCtx *ctx, SolveProblem *sp) {
     ExprRef cref = sp->constraints_head;
     while (cref != EXPR_NULL) {
         ConstraintSpec *cs = (ConstraintSpec *)zsp_pool_ptr(&sp->pool, cref);
+        uint32_t props_before_c = ctx->n_props;
         int r = _compile_constraint(ctx, sp, cs->root);
         if (r < 0) return -2;  /* -2 = UNSAT detected at compile time */
         if (r == 0) n_uncompiled++;
+        /* Tag all propagators created by this constraint */
+        for (uint32_t pi = props_before_c; pi < ctx->n_props; pi++) {
+            if (ctx->prop_constraint_id && pi < ctx->n_prop_refs_capacity)
+                ctx->prop_constraint_id[pi] = cs->constraint_id;
+        }
         cref = cs->next;
     }
 
