@@ -62,6 +62,8 @@ int trail_record_lb(SolveCtx *ctx, uint32_t var_id, int64_t new_lb) {
     e->value_size     = vsize;
     e->decision_level = (uint16_t)ctx->decision_level;
     e->old_value      = old_lb;
+    e->prop_ref       = ctx->current_prop_ref;
+    e->_te_pad        = 0;
     _push_entry(ctx, e);
     return 0;
 }
@@ -98,6 +100,8 @@ int trail_record_ub(SolveCtx *ctx, uint32_t var_id, int64_t new_ub) {
     e->value_size     = vsize;
     e->decision_level = (uint16_t)ctx->decision_level;
     e->old_value      = old_ub;
+    e->prop_ref       = ctx->current_prop_ref;
+    e->_te_pad        = 0;
     _push_entry(ctx, e);
     return 0;
 }
@@ -115,6 +119,8 @@ int trail_record_hole(SolveCtx *ctx, uint32_t var_id, int64_t removed_val) {
     e->value_size     = TRAIL_VALUE_32; /* holes always 32-bit for now */
     e->decision_level = (uint16_t)ctx->decision_level;
     e->old_value      = removed_val;
+    e->prop_ref       = ctx->current_prop_ref;
+    e->_te_pad        = 0;
     _push_entry(ctx, e);
     return 0;
     /* Phase 6 will remove the value from the variable's domain here */
@@ -212,13 +218,27 @@ void trail_backtrack(SolveCtx *ctx, uint32_t target_level) {
             while (ref != EXPR_NULL) {
                 Propagator *p = (Propagator *)zsp_pool_ptr(&ctx->pool, ref);
                 p->flags &= (uint8_t)~PROP_FLAG_ENTAILED;
-                PropWatchSect *ws =
-                    (PropWatchSect *)((char *)p + sizeof(Propagator));
                 uint32_t next = EXPR_NULL;
-                for (uint32_t i = 0; i < ws->n_watches; i++) {
-                    if (ws->var_ids[i] == vi) {
-                        next = ws->next_watchers[i];
-                        break;
+                if (p->flags & PROP_FLAG_WIDE_WATCH) {
+                    uint32_t *nv_ptr = (uint32_t *)((char *)p + sizeof(Propagator));
+                    uint32_t nv = nv_ptr[0];
+                    uint32_t cap = nv_ptr[1];
+                    uint32_t *vids = nv_ptr + 2;
+                    uint32_t *wnexts = vids + cap;
+                    for (uint32_t i = 0; i < nv; i++) {
+                        if (vids[i] == vi) {
+                            next = wnexts[i];
+                            break;
+                        }
+                    }
+                } else {
+                    PropWatchSect *ws =
+                        (PropWatchSect *)((char *)p + sizeof(Propagator));
+                    for (uint32_t i = 0; i < ws->n_watches; i++) {
+                        if (ws->var_ids[i] == vi) {
+                            next = ws->next_watchers[i];
+                            break;
+                        }
                     }
                 }
                 ref = next;

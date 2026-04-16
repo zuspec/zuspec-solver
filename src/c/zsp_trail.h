@@ -43,7 +43,10 @@ typedef struct TrailEntry {
     uint8_t            value_size;    /* 1: TrailValueSize             */
     uint16_t           decision_level;/* 2: level at time of recording */
     int64_t            old_value;     /* 8: old bound (LB or UB)       */
-} TrailEntry;                         /* 24 bytes                      */
+    uint32_t           prop_ref;      /* 4: pool offset of causing propagator
+                                       *    EXPR_NULL = decision (no propagator) */
+    uint32_t           _te_pad;       /* 4: alignment padding          */
+} TrailEntry;                         /* 32 bytes                      */
 
 /* ------------------------------------------------------------------ */
 /* LevelMark — checkpoint recorded at each decision push              */

@@ -60,13 +60,21 @@ typedef struct {
 /* Immediately after the header lies a PropWatchSect (36 bytes),      */
 /* followed by template-specific data.                                 */
 /* ------------------------------------------------------------------ */
+/* Forward declaration for LCG explanation */
+struct Explanation;
+
 struct Propagator {
     PropResult (*fire)(Propagator *self, SolveCtx *ctx);  /* 8 bytes */
-    uint32_t    queue_next;  /* pool offset to next in FIFO queue    */
+    /* Explanation callback for LCG (NULL if propagator doesn't support LCG).
+     * Called during conflict analysis to explain why a bound was tightened. */
+    int (*explain)(Propagator *self, SolveCtx *ctx,
+                   uint32_t var_id, uint8_t is_lb,
+                   int64_t new_bound, struct Explanation *out);  /* 8 bytes */
+    uint32_t    queue_next;  /* pool offset to next in FIFO queue       */
     uint16_t    prop_id;
-    uint8_t     priority;    /* 0=high (fires first), 15=low         */
-    uint8_t     flags;       /* PROP_FLAG_* bits                     */
-};  /* 16 bytes */
+    uint8_t     priority;    /* 0=high (fires first), 15=low            */
+    uint8_t     flags;       /* PROP_FLAG_* bits                        */
+};  /* 24 bytes (16 without explain) */
 
 /* ------------------------------------------------------------------ */
 /* PropQueue — 16-level priority FIFO                                  */

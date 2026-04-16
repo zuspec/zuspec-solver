@@ -1,0 +1,16 @@
+package:
+  name: zuspec-solver
+
+  dep-sets:
+  - name: default-dev
+    deps:
+    - name: zuspec-dataclasses
+      url: https://github.com/zuspec/zuspec-dataclasses.git
+    - name: dv-flow-mgr
+      url: https://github.com/dv-flow/dv-flow-mgr.git
+    - name: dv-flow-libhdl
+      url: https://github.com/dv-flow/dv-flow-libhdlsim.git
+    - name: pytest-dfm
+      url: https://github.com/dv-flow/pytest-dfm.git
+    - name: pytest
+      src: pypi

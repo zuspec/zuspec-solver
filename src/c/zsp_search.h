@@ -171,6 +171,44 @@ int solver_add_array_vars(SolveCtx *ctx,
                           int64_t  lo,
                           int64_t  hi);
 
+/**
+ * Set a custom value-selection callback for the search loop.
+ *
+ * When set, the solver calls this function to choose a value for
+ * each variable decision instead of random/phase-save selection.
+ * The callback should return a value in the variable's current
+ * domain [lo, hi].
+ *
+ * Pass NULL to clear the callback and revert to default selection.
+ *
+ * @param fn        Callback function, or NULL.
+ * @param user_data Opaque pointer passed to the callback.
+ */
+void solver_set_value_selector(SolveCtx *ctx,
+                                int64_t (*fn)(SolveCtx *ctx, uint32_t var_id,
+                                              void *user_data),
+                                void *user_data);
+
+/**
+ * Enable Lazy Clause Generation (LCG) for the solver.
+ *
+ * Allocates and initializes a clause database, VSIDS scoring, and
+ * conflict analysis state. Must be called after solver_compile().
+ *
+ * When LCG is enabled, the search loop performs 1UIP conflict analysis
+ * on every conflict, learning clauses that prevent the same conflict
+ * from recurring. VSIDS activity-based branching replaces MRV for
+ * variable selection.
+ *
+ * @return 0 on success, -1 on allocation failure.
+ */
+int solver_enable_lcg(SolveCtx *ctx);
+
+/**
+ * Disable and free LCG state.
+ */
+void solver_disable_lcg(SolveCtx *ctx);
+
 #ifdef __cplusplus
 }
 #endif

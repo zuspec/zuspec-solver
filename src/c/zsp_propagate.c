@@ -2,6 +2,7 @@
 #include "zsp_propagator.h"
 #include "zsp_ctx.h"
 #include "zsp_trail.h"
+#include "zsp_lcg.h"
 
 /* ------------------------------------------------------------------ */
 /* Internal: wake all watchers on a variable                          */
@@ -100,7 +101,10 @@ PropResult ctx_tighten_lb32(SolveCtx *ctx, uint32_t var_id, int32_t new_lb) {
 
     trail_record_lb(ctx, var_id, (int64_t)new_lb);  /* applies change */
 
-    if (v->lo > v->hi) return PROP_CONFLICT;
+    if (v->lo > v->hi) {
+        ctx->conflict_prop_ref = ctx->current_prop_ref;
+        return PROP_CONFLICT;
+    }
     /* Update unassigned_mask: clear bit when variable becomes singleton */
     if (v->lo == v->hi && var_id < 64)
         ctx->unassigned_mask &= ~(1ULL << var_id);
@@ -114,7 +118,10 @@ PropResult ctx_tighten_ub32(SolveCtx *ctx, uint32_t var_id, int32_t new_ub) {
 
     trail_record_ub(ctx, var_id, (int64_t)new_ub);  /* applies change */
 
-    if (v->lo > v->hi) return PROP_CONFLICT;
+    if (v->lo > v->hi) {
+        ctx->conflict_prop_ref = ctx->current_prop_ref;
+        return PROP_CONFLICT;
+    }
     if (v->lo == v->hi && var_id < 64)
         ctx->unassigned_mask &= ~(1ULL << var_id);
     if (ctx->watcher_heads) _wake_var(ctx, var_id);
@@ -131,10 +138,21 @@ PropResult ctx_tighten_lb64(SolveCtx *ctx, uint32_t var_id, int64_t new_lb) {
     /* check conflict */
     int64_t lo = var_lo64(ctx, v);
     int64_t hi = var_hi64(ctx, v);
-    if (lo > hi) return PROP_CONFLICT;
+    if (lo > hi) {
+        ctx->conflict_prop_ref = ctx->current_prop_ref;
+        return PROP_CONFLICT;
+    }
     if (lo == hi && var_id < 64)
         ctx->unassigned_mask &= ~(1ULL << var_id);
     if (ctx->watcher_heads) _wake_var(ctx, var_id);
+    /* Notify clause DB when LCG is active so learned clauses can
+     * trigger unit propagation immediately on bound changes. */
+    if (ctx->lcg_ctx) {
+        LCGCtx *lcg = (LCGCtx *)ctx->lcg_ctx;
+        PropResult cpr = clause_notify_lb(&lcg->clause_db, ctx, var_id, lo);
+        if (cpr == PROP_CONFLICT)
+            return PROP_CONFLICT;
+    }
     return PROP_OK;
 }
 
@@ -147,10 +165,20 @@ PropResult ctx_tighten_ub64(SolveCtx *ctx, uint32_t var_id, int64_t new_ub) {
 
     int64_t lo = var_lo64(ctx, v);
     int64_t hi = var_hi64(ctx, v);
-    if (lo > hi) return PROP_CONFLICT;
+    if (lo > hi) {
+        ctx->conflict_prop_ref = ctx->current_prop_ref;
+        return PROP_CONFLICT;
+    }
     if (lo == hi && var_id < 64)
         ctx->unassigned_mask &= ~(1ULL << var_id);
     if (ctx->watcher_heads) _wake_var(ctx, var_id);
+    /* Notify clause DB when LCG is active */
+    if (ctx->lcg_ctx) {
+        LCGCtx *lcg = (LCGCtx *)ctx->lcg_ctx;
+        PropResult cpr = clause_notify_ub(&lcg->clause_db, ctx, var_id, hi);
+        if (cpr == PROP_CONFLICT)
+            return PROP_CONFLICT;
+    }
     return PROP_OK;
 }
 
@@ -196,8 +224,14 @@ PropResult solver_propagate(SolveCtx *ctx) {
             }
         }
 
+        /* Stamp current propagator ref for trail entries */
+        ctx->current_prop_ref = prop_ref;
         PropResult r = p->fire(p, ctx);
-        if (r == PROP_CONFLICT) return PROP_CONFLICT;
+        ctx->current_prop_ref = EXPR_NULL;
+        if (r == PROP_CONFLICT) {
+            ctx->conflict_prop_ref = prop_ref;
+            return PROP_CONFLICT;
+        }
         if (r == PROP_ENTAILED) p->flags |= PROP_FLAG_ENTAILED;
     }
     return PROP_OK;
