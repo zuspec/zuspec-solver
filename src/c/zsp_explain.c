@@ -30,8 +30,16 @@
 
 #define PROP_WS(p) ((PropWatchSect *)((char *)(p) + sizeof(Propagator)))
 
+/* Resolve a var_id through the alias table to its root representative. */
+static inline uint32_t _resolve_var(const SolveCtx *ctx, uint32_t var_id) {
+    if (!ctx->var_alias) return var_id;
+    uint32_t root = var_id;
+    while (ctx->var_alias[root] != root) root = ctx->var_alias[root];
+    return root;
+}
+
 static Literal _mk_lb(uint32_t var_id, int32_t bound) {
-    Literal l = {var_id, bound, 1, {0, 0, 0}};
+    Literal l = {var_id, bound, 1, {0, 0, 0}};  /* caller resolves alias */
     return l;
 }
 
@@ -547,3 +555,42 @@ int explain_clog2(Propagator *self, SolveCtx *ctx,
     (void)is_lb; (void)new_bound;
     return 0;
 }
+
+/* ---- T-21: Explanation soundness verifier ---- */
+
+#ifndef NDEBUG
+#include <assert.h>
+
+/**
+ * Verify that an explanation is sound:
+ * (a) All antecedent literals are currently true.
+ * (b) The number of literals is within bounds.
+ *
+ * Called in debug builds after every explain callback during
+ * proof extraction. Triggers an assertion on failure.
+ */
+void _verify_explanation(const SolveCtx *ctx,
+                          uint32_t var_id, uint8_t is_lb,
+                          int64_t new_bound, const Explanation *expl) {
+    assert(expl->n_lits <= MAX_EXPLAIN_LITS);
+
+    for (uint32_t i = 0; i < expl->n_lits; i++) {
+        const Literal *lit = &expl->lits[i];
+        assert(lit->var_id < ctx->n_vars);
+
+        /* Check that the literal is true under current bounds */
+        const Variable *v = &ctx->vars[lit->var_id];
+        if (lit->is_lb) {
+            /* x >= bound should be true: var_lo >= bound */
+            int64_t lo = var_lo64(ctx, v);
+            assert(lo >= lit->bound);
+        } else {
+            /* x <= bound should be true: var_hi <= bound */
+            int64_t hi = var_hi64(ctx, v);
+            assert(hi <= lit->bound);
+        }
+    }
+
+    (void)var_id; (void)is_lb; (void)new_bound;
+}
+#endif /* NDEBUG */

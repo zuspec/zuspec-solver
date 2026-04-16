@@ -59,3 +59,50 @@ solver_solve(ctx, NULL);
 // solver_soft_active(ctx, 0) == 0  (x==5 relaxed)
 // solver_soft_active(ctx, 1) == 1  (y==7 kept)
 ```
+
+## Diagnosing Relaxed Soft Constraints
+
+When `solver_solve()` relaxes soft constraints, use
+`contra_explain_soft()` to understand why:
+
+```c
+#include "zsp_contradiction.h"
+
+SolveResult res = solver_solve(ctx, &opts);
+if (res == SOLVE_OK) {
+    /* Check which softs were relaxed */
+    for (uint32_t i = 0; i < n_softs; i++) {
+        if (!solver_soft_active(ctx, i))
+            printf("Soft %u was relaxed\n", i);
+    }
+
+    /* Get detailed diagnostics */
+    ContraSoftDiagResult diag;
+    contra_explain_soft(ctx, sp, NULL, &diag);
+
+    for (uint32_t i = 0; i < diag.n_entries; i++) {
+        ContraSoftDiagEntry *e = &diag.entries[i];
+        printf("Soft %u (priority %u) relaxed:\n",
+               e->soft_constraint_id, e->soft_priority);
+        printf("  Conflicts with %u hard constraints\n",
+               e->n_conflict_hard);
+        if (e->proof_text)
+            printf("  %s\n", e->proof_text);
+        if (e->n_hard_relax > 0)
+            printf("  %u relaxation suggestions available\n",
+                   e->n_hard_relax);
+        if (e->n_alternatives > 0)
+            printf("  %u alternative softs could substitute\n",
+                   e->n_alternatives);
+    }
+
+    contra_soft_diag_free(&diag);
+}
+```
+
+The diagnostic result includes:
+- **Conflict hard IDs**: which hard constraints forced the relaxation.
+- **Proof text**: human-readable explanation of the conflict.
+- **Relaxation suggestions**: minimum changes to hard constraints that
+  would allow the soft to be satisfied.
+- **Alternative softs**: other relaxed softs that could substitute.

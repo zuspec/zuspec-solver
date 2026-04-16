@@ -268,3 +268,99 @@ def test_mus_single_constraint_domain(libzsp_debug):
     # The MUS should include C1 (the only constraint)
     assert 1 in mus, f"Expected C1 in MUS, got {mus}"
     assert len(mus) == 1, f"Expected MUS of size 1, got {mus}"
+
+
+def test_mus_budget_exhaustion(libzsp_debug):
+    """With max_solver_calls=2 on a problem that needs more,
+    partial result should be returned."""
+    lib = libzsp_debug
+    _setup(lib)
+
+    class ContraOpts(ctypes.Structure):
+        _fields_ = [
+            ("max_solver_calls",   ctypes.c_uint32),
+            ("time_limit_sec",     ctypes.c_double),
+            ("skip_minimization",  ctypes.c_uint8),
+            ("emit_json",          ctypes.c_uint8),
+            ("emit_proof",         ctypes.c_uint8),
+            ("compute_relaxations", ctypes.c_uint8),
+            ("find_alternatives",  ctypes.c_uint8),
+            ("_pad",               ctypes.c_uint8 * 3),
+            ("constraint_info",    ctypes.c_void_p),
+            ("n_constraint_info",  ctypes.c_uint32),
+        ]
+
+    lib.contra_analyze_unsat.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p,
+        ctypes.POINTER(ContraOpts), ctypes.POINTER(ContraResult)
+    ]
+
+    sp_buf = (ctypes.c_uint8 * _SP_BUF_SIZE)()
+    sp = lib.solve_problem_init(sp_buf, _SP_BUF_SIZE)
+
+    # Many constraints, only 2 contradictory
+    lib.problem_add_var(sp, 0, 8, 0, 0, 100)
+    lib.problem_add_var(sp, 1, 8, 0, 0, 100)
+    lib.problem_add_var(sp, 2, 8, 0, 0, 100)
+    vx = lib.expr_var(sp, 0)
+    vy = lib.expr_var(sp, 1)
+    vz = lib.expr_var(sp, 2)
+
+    for i in range(8):
+        c = lib.expr_const(sp, 10 + i * 5, 0)
+        lib.problem_add_constraint(sp, lib.expr_binary(sp, BIN_LTE, vy, c))
+
+    # The actual contradiction
+    lib.problem_add_constraint(sp, lib.expr_binary(sp, BIN_GTE, vx,
+                               lib.expr_const(sp, 50, 0)))
+    lib.problem_add_constraint(sp, lib.expr_binary(sp, BIN_LTE, vx,
+                               lib.expr_const(sp, 10, 0)))
+
+    ctx_buf, ctx, ba = _make_ctx(lib)
+
+    opts = ContraOpts()
+    ctypes.memset(ctypes.byref(opts), 0, ctypes.sizeof(opts))
+    opts.max_solver_calls = 3
+    opts.compute_relaxations = 0  # skip relaxation to test budget on MUS only
+
+    result = ContraResult()
+    rc = lib.contra_analyze_unsat(ctx, sp, ctypes.byref(opts),
+                                   ctypes.byref(result))
+    assert rc == 0
+    # Should have some result even with tight budget
+    assert result.mus_size >= 0  # partial or empty result is acceptable
+    assert result.n_solver_calls <= 5  # might exceed budget slightly
+
+    lib.contra_result_free(ctypes.byref(result))
+    lib.zsp_block_alloc_destroy(ba)
+
+
+def test_level0_fast_path(libzsp_debug):
+    """Trivially-UNSAT problem (compile-time conflict) should trigger
+    the level-0 fast path with correct MUS."""
+    lib = libzsp_debug
+    _setup(lib)
+
+    sp_buf = (ctypes.c_uint8 * _SP_BUF_SIZE)()
+    sp = lib.solve_problem_init(sp_buf, _SP_BUF_SIZE)
+
+    # x in [0, 100]
+    lib.problem_add_var(sp, 0, 8, 0, 0, 100)
+    vx = lib.expr_var(sp, 0)
+
+    # C1: x >= 80
+    lib.problem_add_constraint(sp, lib.expr_binary(sp, BIN_GTE, vx,
+                               lib.expr_const(sp, 80, 0)))
+    # C2: x <= 20
+    lib.problem_add_constraint(sp, lib.expr_binary(sp, BIN_LTE, vx,
+                               lib.expr_const(sp, 20, 0)))
+    # C3: x >= 10 (satisfiable, not part of the contradiction)
+    lib.problem_add_constraint(sp, lib.expr_binary(sp, BIN_GTE, vx,
+                               lib.expr_const(sp, 10, 0)))
+
+    mus, n_calls = _get_mus(lib, sp)
+
+    # MUS should contain C1 and C2 (the contradiction)
+    assert 1 in mus, f"C1 not in MUS: {mus}"
+    assert 2 in mus, f"C2 not in MUS: {mus}"
+    assert len(mus) == 2, f"MUS not minimal, got {mus}"

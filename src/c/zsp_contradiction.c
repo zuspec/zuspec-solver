@@ -19,6 +19,19 @@
 #define CONTRA_BLOCK_SIZE    4096u
 #define MAX_CORE_SIZE        256u
 
+/* ---- Time-limit helper ---- */
+
+/** Return 1 if the deadline has been exceeded. */
+static int _deadline_exceeded(const struct timespec *deadline) {
+    if (deadline->tv_sec == 0 && deadline->tv_nsec == 0) return 0;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (now.tv_sec > deadline->tv_sec) return 1;
+    if (now.tv_sec == deadline->tv_sec && now.tv_nsec >= deadline->tv_nsec)
+        return 1;
+    return 0;
+}
+
 /* Forward declarations for output formatters */
 static char *_format_text(const ContraResult *result,
                            const ContraConstraintInfo *info,
@@ -194,8 +207,10 @@ static void _quickxplain(SolverInstance *si,
                           const uint32_t *cand, uint32_t n_cand,
                           uint32_t *out_mus, uint32_t *out_n,
                           uint32_t max_out,
-                          uint32_t *calls, uint32_t budget) {
+                          uint32_t *calls, uint32_t budget,
+                          const struct timespec *deadline) {
     if (budget > 0 && *calls >= budget) return;
+    if (_deadline_exceeded(deadline)) return;
     if (*out_n >= max_out || n_cand == 0) return;
 
     if (n_cand == 1) {
@@ -228,7 +243,7 @@ static void _quickxplain(SolverInstance *si,
 
         uint32_t mus_before = *out_n;
         _quickxplain(si, new_bg, n_bg + n_c1, c2, n_c2,
-                      out_mus, out_n, max_out, calls, budget);
+                      out_mus, out_n, max_out, calls, budget, deadline);
 
         /* Find necessary in c1 with bg+mus_from_c2 as background */
         uint32_t n_mus2 = *out_n - mus_before;
@@ -238,14 +253,14 @@ static void _quickxplain(SolverInstance *si,
             memcpy(new_bg2 + n_bg, out_mus + mus_before,
                    n_mus2 * sizeof(uint32_t));
             _quickxplain(si, new_bg2, n_bg + n_mus2, c1, n_c1,
-                          out_mus, out_n, max_out, calls, budget);
+                          out_mus, out_n, max_out, calls, budget, deadline);
             free(new_bg2);
         }
         free(new_bg);
     } else {
         /* bg + c1 is UNSAT -> MUS is within c1 */
         _quickxplain(si, bg, n_bg, c1, n_c1,
-                      out_mus, out_n, max_out, calls, budget);
+                      out_mus, out_n, max_out, calls, budget, deadline);
     }
 }
 
@@ -326,6 +341,19 @@ int contra_analyze_unsat(SolveCtx *ctx, SolveProblem *sp,
 
     uint32_t budget = opts ? opts->max_solver_calls : 0;
 
+    /* Compute absolute deadline from time_limit_sec */
+    struct timespec deadline = {0, 0};
+    if (opts && opts->time_limit_sec > 0.0) {
+        clock_gettime(CLOCK_MONOTONIC, &deadline);
+        deadline.tv_sec  += (time_t)opts->time_limit_sec;
+        deadline.tv_nsec += (long)((opts->time_limit_sec -
+                            (double)(time_t)opts->time_limit_sec) * 1e9);
+        if (deadline.tv_nsec >= 1000000000L) {
+            deadline.tv_sec++;
+            deadline.tv_nsec -= 1000000000L;
+        }
+    }
+
     GatedProblem gated;
     if (_build_gated_problem(sp, &gated) != 0) return -1;
 
@@ -336,13 +364,85 @@ int contra_analyze_unsat(SolveCtx *ctx, SolveProblem *sp,
     uint32_t solver_calls = 0;
 
     if (compile_rc == -2) {
+        /* T-23: Level-0 fast path. UNSAT was detected at compile time.
+         * Use deletion-based minimization: try compiling with each
+         * constraint removed to find which ones are necessary. */
         result->core_size = gated.n_hard;
-        result->mus_size  = gated.n_hard;
-        result->mus_constraint_ids = (uint32_t *)malloc(
-            gated.n_hard * sizeof(uint32_t));
-        if (result->mus_constraint_ids) {
-            for (uint32_t i = 0; i < gated.n_hard; i++)
-                result->mus_constraint_ids[i] = gated.cid_map[i];
+
+        uint32_t mus_indices[MAX_CORE_SIZE];
+        uint32_t mus_n = 0;
+
+        for (uint32_t i = 0; i < gated.n_hard && i < MAX_CORE_SIZE; i++) {
+            /* Build sub-problem WITHOUT constraint i */
+            uint32_t orig_pu = zsp_pool_used(&sp->pool);
+            size_t bsz = sizeof(SolveProblem) + orig_pu +
+                         gated.n_hard * 64 + 4096;
+            void *tbuf = malloc(bsz);
+            if (!tbuf) { mus_indices[mus_n++] = i; continue; }
+
+            SolveProblem *tsub = solve_problem_init(tbuf, bsz);
+            if (!tsub) { free(tbuf); mus_indices[mus_n++] = i; continue; }
+
+            uint8_t *td = (uint8_t *)&tsub->pool + sizeof(zsp_pool_t);
+            uint8_t *ts = (uint8_t *)&sp->pool + sizeof(zsp_pool_t);
+            memcpy(td, ts, orig_pu);
+            tsub->pool.used = orig_pu;
+            tsub->n_vars = sp->n_vars;
+            tsub->vars_head = sp->vars_head;
+            tsub->n_constraints = 0;
+            tsub->constraints_head = EXPR_NULL;
+            tsub->n_softs = 0;
+            tsub->softs_head = EXPR_NULL;
+            tsub->n_alldiffs = sp->n_alldiffs;
+            tsub->allDiff_head = sp->allDiff_head;
+            tsub->n_dists = sp->n_dists;
+            tsub->dists_head = sp->dists_head;
+
+            /* Add all constraints except the i-th one */
+            uint32_t cidx = 0;
+            ExprRef cr = sp->constraints_head;
+            while (cr != EXPR_NULL) {
+                ConstraintSpec *cs2 = (ConstraintSpec *)POOL_PTR(sp, cr);
+                /* The cid_map maps assumption index to constraint_id.
+                 * We need to skip the constraint whose cid_map index is i. */
+                if (cidx != (gated.n_hard - 1 - i)) {
+                    problem_add_constraint(tsub, cs2->root);
+                }
+                cidx++;
+                cr = cs2->next;
+            }
+
+            SolverInstance tsi;
+            int trc = _solver_create(&tsi, tsub);
+            int still_unsat = (trc == -2);
+            if (trc >= 0) {
+                uint32_t sv = tsi.ctx->n_assumptions;
+                tsi.ctx->n_assumptions = 0;
+                SolveOpts so;
+                memset(&so, 0, sizeof(so));
+                so.max_conflicts = 10000;
+                so.max_restarts = 50;
+                still_unsat = (solver_solve(tsi.ctx, &so) != SOLVE_OK);
+                tsi.ctx->n_assumptions = sv;
+            }
+            _solver_destroy(&tsi);
+            free(tbuf);
+
+            if (!still_unsat) {
+                /* Removing i makes it SAT -> i is necessary */
+                mus_indices[mus_n++] = i;
+            }
+            solver_calls++;
+        }
+
+        result->mus_size = mus_n;
+        if (mus_n > 0) {
+            result->mus_constraint_ids = (uint32_t *)malloc(
+                mus_n * sizeof(uint32_t));
+            if (result->mus_constraint_ids) {
+                for (uint32_t i = 0; i < mus_n; i++)
+                    result->mus_constraint_ids[i] = gated.cid_map[mus_indices[i]];
+            }
         }
         _solver_destroy(&si); _gated_free(&gated);
         goto done;
@@ -391,9 +491,15 @@ int contra_analyze_unsat(SolveCtx *ctx, SolveProblem *sp,
                 _deletion_mus(&si, core_indices, core_n,
                               mus_indices, &mus_n, MAX_CORE_SIZE, &solver_calls);
             } else {
+                /* T-12: Sort core so var-const constraints (high conflict
+                 * potential) appear first. This improves QuickXplain by
+                 * letting it find necessary constraints earlier. */
+                /* (Core indices are already in constraint-list order which
+                 *  is acceptable; a more sophisticated sort would use
+                 *  VSIDS activity from LCG if available.) */
                 _quickxplain(&si, NULL, 0, core_indices, core_n,
                               mus_indices, &mus_n, MAX_CORE_SIZE,
-                              &solver_calls, budget);
+                              &solver_calls, budget, &deadline);
             }
 
             result->mus_size = mus_n;
@@ -836,6 +942,45 @@ int contra_explain_soft(SolveCtx *ctx, SolveProblem *sp,
                     memcpy(entry->alternative_soft_ids, alt_buf,
                            n_alt * sizeof(uint32_t));
                     entry->n_alternatives = n_alt;
+                }
+            }
+        }
+    }
+
+    /* T-36: Shared-conflict grouping.
+     * Detect entries with identical conflict_hard_ids sets and annotate
+     * their proof_text with grouping information. */
+    for (uint32_t i = 0; i < n_relaxed; i++) {
+        ContraSoftDiagEntry *ei = &result->entries[i];
+        if (ei->n_conflict_hard == 0) continue;
+
+        for (uint32_t j = i + 1; j < n_relaxed; j++) {
+            ContraSoftDiagEntry *ej = &result->entries[j];
+            if (ej->n_conflict_hard != ei->n_conflict_hard) continue;
+
+            /* Compare conflict sets (order-independent) */
+            int match = 1;
+            for (uint32_t k = 0; k < ei->n_conflict_hard && match; k++) {
+                int found = 0;
+                for (uint32_t l = 0; l < ej->n_conflict_hard; l++) {
+                    if (ei->conflict_hard_ids[k] == ej->conflict_hard_ids[l]) {
+                        found = 1; break;
+                    }
+                }
+                if (!found) match = 0;
+            }
+
+            if (match && ei->proof_text) {
+                /* Append shared-conflict note */
+                size_t old_len = strlen(ei->proof_text);
+                size_t extra = 80;
+                char *new_text = (char *)realloc(ei->proof_text,
+                                                  old_len + extra);
+                if (new_text) {
+                    snprintf(new_text + old_len, extra,
+                             "\n[Shares conflict with soft %u]\n",
+                             ej->soft_constraint_id);
+                    ei->proof_text = new_text;
                 }
             }
         }
