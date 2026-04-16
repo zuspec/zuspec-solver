@@ -10,6 +10,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
+#include <stdio.h>
 #include "zsp_contradiction.h"
 #include "zsp_search.h"
 #include "zsp_block_alloc.h"
@@ -17,6 +18,14 @@
 #define CONTRA_CTX_BUF_SIZE  (1024u * 1024u)
 #define CONTRA_BLOCK_SIZE    4096u
 #define MAX_CORE_SIZE        256u
+
+/* Forward declarations for output formatters */
+static char *_format_text(const ContraResult *result,
+                           const ContraConstraintInfo *info,
+                           uint32_t n_info);
+static char *_format_json(const ContraResult *result,
+                           const ContraConstraintInfo *info,
+                           uint32_t n_info);
 
 /* ---- GatedProblem ---- */
 
@@ -393,7 +402,38 @@ int contra_analyze_unsat(SolveCtx *ctx, SolveProblem *sp,
 
     _solver_destroy(&si); _gated_free(&gated);
 
+    /* Phase 4: compute relaxation suggestions if we have a MUS */
+    if (result->mus_size > 0 && result->mus_constraint_ids &&
+        (!opts || opts->compute_relaxations)) {
+        result->relaxations = (ContraRelaxSuggestion *)malloc(
+            result->mus_size * sizeof(ContraRelaxSuggestion));
+        if (result->relaxations) {
+            int rrc = contra_compute_relaxations(
+                ctx, sp, result->mus_constraint_ids, result->mus_size,
+                opts, result->relaxations);
+            if (rrc == 0) {
+                result->n_relaxations = result->mus_size;
+            } else {
+                free(result->relaxations);
+                result->relaxations = NULL;
+                result->n_relaxations = 0;
+            }
+        }
+    }
+
 done:
+    /* Phase 5: format output */
+    if (result->mus_size > 0) {
+        const ContraConstraintInfo *info = opts ? opts->constraint_info : NULL;
+        uint32_t n_info = opts ? opts->n_constraint_info : 0;
+
+        result->proof_text = _format_text(result, info, n_info);
+
+        if (!opts || opts->emit_json) {
+            result->proof_json = _format_json(result, info, n_info);
+        }
+    }
+
     result->n_solver_calls = solver_calls;
     {
         struct timespec t1;
@@ -405,6 +445,150 @@ done:
 }
 
 /* ---- Free/stub functions ---- */
+
+/* ---- Text output formatter (T-24) ---- */
+
+/**
+ * Format MUS + relaxation data as human-readable text.
+ * Returns a malloc'd string or NULL.
+ */
+static char *_format_text(const ContraResult *result,
+                           const ContraConstraintInfo *info,
+                           uint32_t n_info) {
+    /* Estimate buffer size */
+    size_t cap = 512 + result->mus_size * 256 + result->n_relaxations * 256;
+    char *buf = (char *)malloc(cap);
+    if (!buf) return NULL;
+    size_t pos = 0;
+
+#define APPEND(...) do { \
+    int _n = snprintf(buf + pos, cap - pos, __VA_ARGS__); \
+    if (_n > 0) pos += (size_t)_n; \
+} while(0)
+
+    APPEND("UNSATISFIABLE: %u constraint%s form a minimal contradiction.\n\n",
+           result->mus_size, result->mus_size == 1 ? "" : "s");
+
+    APPEND("Constraints involved:\n");
+    for (uint32_t i = 0; i < result->mus_size; i++) {
+        uint32_t cid = result->mus_constraint_ids[i];
+
+        /* Look up constraint name/source if provided */
+        const char *name = NULL;
+        const char *file = NULL;
+        uint32_t line = 0;
+        for (uint32_t j = 0; j < n_info; j++) {
+            if (info[j].constraint_id == cid) {
+                name = info[j].name;
+                file = info[j].source_file;
+                line = info[j].source_line;
+                break;
+            }
+        }
+
+        if (name && file) {
+            APPEND("  [C%u]  %s  (line %u of %s)\n", cid, name, line, file);
+        } else if (name) {
+            APPEND("  [C%u]  %s\n", cid, name);
+        } else {
+            APPEND("  [C%u]\n", cid);
+        }
+    }
+
+    /* Relaxation suggestions */
+    if (result->n_relaxations > 0 && result->relaxations) {
+        APPEND("\nRelaxation suggestions:\n");
+        for (uint32_t i = 0; i < result->n_relaxations; i++) {
+            const ContraRelaxSuggestion *r = &result->relaxations[i];
+            if (!r->is_relaxable) {
+                APPEND("  [C%u]  Not relaxable (must be removed entirely)\n",
+                       r->constraint_id);
+                continue;
+            }
+            APPEND("  [C%u]  original=%lld  relaxed=%lld  (delta: %+lld)\n",
+                   r->constraint_id,
+                   (long long)r->original_constant,
+                   (long long)r->relaxed_constant,
+                   (long long)r->delta);
+        }
+        APPEND("\nEasiest fix: relax any ONE of the above to its suggested value.\n");
+    }
+
+    APPEND("\nAnalysis used %u solver calls in %.3f seconds.\n",
+           result->n_solver_calls, result->elapsed_sec);
+
+#undef APPEND
+    return buf;
+}
+
+/* ---- JSON output formatter (T-25) ---- */
+
+/**
+ * Format MUS + relaxation data as JSON.
+ * Returns a malloc'd string or NULL.
+ */
+static char *_format_json(const ContraResult *result,
+                           const ContraConstraintInfo *info,
+                           uint32_t n_info) {
+    size_t cap = 512 + result->mus_size * 256 + result->n_relaxations * 256;
+    char *buf = (char *)malloc(cap);
+    if (!buf) return NULL;
+    size_t pos = 0;
+
+#define APPEND(...) do { \
+    int _n = snprintf(buf + pos, cap - pos, __VA_ARGS__); \
+    if (_n > 0) pos += (size_t)_n; \
+} while(0)
+
+    APPEND("{");
+
+    /* MUS */
+    APPEND("\"mus\":[");
+    for (uint32_t i = 0; i < result->mus_size; i++) {
+        uint32_t cid = result->mus_constraint_ids[i];
+        if (i > 0) APPEND(",");
+        APPEND("{\"id\":%u", cid);
+
+        for (uint32_t j = 0; j < n_info; j++) {
+            if (info[j].constraint_id == cid) {
+                if (info[j].name) APPEND(",\"name\":\"%s\"", info[j].name);
+                if (info[j].source_file)
+                    APPEND(",\"source\":\"%s:%u\"",
+                           info[j].source_file, info[j].source_line);
+                break;
+            }
+        }
+        APPEND("}");
+    }
+    APPEND("],");
+
+    /* Relaxations */
+    APPEND("\"relaxations\":[");
+    for (uint32_t i = 0; i < result->n_relaxations; i++) {
+        const ContraRelaxSuggestion *r = &result->relaxations[i];
+        if (i > 0) APPEND(",");
+        APPEND("{\"constraint_id\":%u", r->constraint_id);
+        APPEND(",\"is_relaxable\":%s", r->is_relaxable ? "true" : "false");
+        if (r->is_relaxable) {
+            APPEND(",\"original\":%lld", (long long)r->original_constant);
+            APPEND(",\"relaxed\":%lld", (long long)r->relaxed_constant);
+            APPEND(",\"delta\":%lld", (long long)r->delta);
+        }
+        APPEND("}");
+    }
+    APPEND("],");
+
+    /* Stats */
+    APPEND("\"core_size\":%u", result->core_size);
+    APPEND(",\"mus_size\":%u", result->mus_size);
+    APPEND(",\"n_solver_calls\":%u", result->n_solver_calls);
+    APPEND(",\"elapsed_sec\":%.6f", result->elapsed_sec);
+
+    APPEND("}");
+
+#undef APPEND
+    return buf;
+}
 
 void contra_result_free(ContraResult *result) {
     if (!result) return;
@@ -430,12 +614,333 @@ void contra_soft_diag_free(ContraSoftDiagResult *result) {
     free(result->entries); memset(result, 0, sizeof(*result));
 }
 
+/* ---- Constraint form classifier (T-27) ---- */
+
+typedef struct {
+    uint8_t  is_relaxable;     /* 1 if constraint has a relaxable constant */
+    uint8_t  relax_direction;  /* 0=increase, 1=decrease, 2=both */
+    uint32_t var_id;           /* variable in the constraint */
+    int64_t  original_const;   /* the constant being relaxed */
+    BinOp    op;               /* the comparison operator */
+    uint8_t  is_sum;           /* 1 if constraint is sum-based (not simple var-const) */
+} ClassifyResult;
+
+/**
+ * Classify a constraint for relaxation potential.
+ * Handles: var <= C, var >= C, var < C, var > C, var == C.
+ * Returns 0 if classified, -1 if not relaxable.
+ */
+static int _classify_constraint(SolveProblem *sp, ExprRef root,
+                                 ClassifyResult *out) {
+    memset(out, 0, sizeof(*out));
+
+    if (root == EXPR_NULL) return -1;
+    ExprKind k = *(ExprKind *)POOL_PTR(sp, root);
+    if (k != EXPR_BINARY) return -1;
+
+    ExprBinary *e = (ExprBinary *)POOL_PTR(sp, root);
+    uint32_t vid; int64_t cv;
+
+    /* Check var op const or const op var */
+    int is_vc = 0, is_cv = 0;
+    if (e->lhs != EXPR_NULL && e->rhs != EXPR_NULL) {
+        ExprKind lk = *(ExprKind *)POOL_PTR(sp, e->lhs);
+        ExprKind rk = *(ExprKind *)POOL_PTR(sp, e->rhs);
+
+        if (lk == EXPR_VAR && rk == EXPR_CONST) {
+            ExprVar *ev = (ExprVar *)POOL_PTR(sp, e->lhs);
+            ExprConst *ec = (ExprConst *)POOL_PTR(sp, e->rhs);
+            vid = ev->var_id;
+            cv = ec->value;
+            is_vc = 1;
+        } else if (lk == EXPR_CONST && rk == EXPR_VAR) {
+            ExprConst *ec = (ExprConst *)POOL_PTR(sp, e->lhs);
+            ExprVar *ev = (ExprVar *)POOL_PTR(sp, e->rhs);
+            vid = ev->var_id;
+            cv = ec->value;
+            is_cv = 1;
+        }
+    }
+
+    if (!is_vc && !is_cv) return -1;
+
+    /* Normalize to var-on-left form */
+    BinOp op = e->op;
+    if (is_cv) {
+        switch (op) {
+        case BIN_LTE: op = BIN_GTE; break;
+        case BIN_LT:  op = BIN_GT;  break;
+        case BIN_GTE: op = BIN_LTE; break;
+        case BIN_GT:  op = BIN_LT;  break;
+        default: break;
+        }
+    }
+
+    out->var_id = vid;
+    out->original_const = cv;
+    out->op = op;
+    out->is_relaxable = 1;
+
+    switch (op) {
+    case BIN_LTE: case BIN_LT:
+        out->relax_direction = 0;  /* increase constant to widen UB */
+        break;
+    case BIN_GTE: case BIN_GT:
+        out->relax_direction = 1;  /* decrease constant to widen LB */
+        break;
+    case BIN_EQ:
+        out->relax_direction = 2;  /* both directions */
+        break;
+    case BIN_NEQ:
+        out->is_relaxable = 0;  /* can't relax != */
+        return -1;
+    default:
+        out->is_relaxable = 0;
+        return -1;
+    }
+
+    return 0;
+}
+
+/* ---- Relaxation binary search (T-28) ---- */
+
+/**
+ * Build a sub-problem from MUS constraints, replacing one constraint's
+ * constant with a new value. Returns a malloc'd buffer containing the
+ * SolveProblem, or NULL on failure.
+ */
+static void *_build_relaxed_subproblem(SolveProblem *orig,
+                                        const uint32_t *mus_cids,
+                                        uint32_t mus_size,
+                                        uint32_t target_cid,
+                                        int64_t new_const) {
+    uint32_t orig_pool_used = zsp_pool_used(&orig->pool);
+    size_t buf_size = sizeof(SolveProblem) + orig_pool_used + mus_size * 64 + 4096;
+    void *buf = malloc(buf_size);
+    if (!buf) return NULL;
+
+    SolveProblem *sp = solve_problem_init(buf, buf_size);
+    if (!sp) { free(buf); return NULL; }
+
+    /* Copy pool data */
+    uint8_t *dst = (uint8_t *)&sp->pool + sizeof(zsp_pool_t);
+    uint8_t *src = (uint8_t *)&orig->pool + sizeof(zsp_pool_t);
+    memcpy(dst, src, orig_pool_used);
+    sp->pool.used = orig_pool_used;
+
+    /* Copy variables */
+    sp->n_vars = orig->n_vars;
+    sp->vars_head = orig->vars_head;
+    sp->n_constraints = 0;
+    sp->constraints_head = EXPR_NULL;
+    sp->n_softs = 0;
+    sp->softs_head = EXPR_NULL;
+    sp->n_alldiffs = 0;
+    sp->allDiff_head = EXPR_NULL;
+    sp->n_dists = 0;
+    sp->dists_head = EXPR_NULL;
+
+    /* Add only the MUS constraints */
+    ExprRef cref = orig->constraints_head;
+    while (cref != EXPR_NULL) {
+        ConstraintSpec *cs = (ConstraintSpec *)POOL_PTR(orig, cref);
+
+        /* Check if this constraint is in the MUS */
+        int in_mus = 0;
+        for (uint32_t i = 0; i < mus_size; i++) {
+            if (mus_cids[i] == cs->constraint_id) { in_mus = 1; break; }
+        }
+
+        if (in_mus) {
+            ExprRef root = cs->root;
+
+            if (cs->constraint_id == target_cid && root != EXPR_NULL) {
+                /* Replace the constant in this constraint */
+                ExprKind k = *(ExprKind *)POOL_PTR(sp, root);
+                if (k == EXPR_BINARY) {
+                    ExprBinary *e = (ExprBinary *)POOL_PTR(sp, root);
+
+                    /* Build new expression with modified constant */
+                    ExprRef new_const_ref = expr_const(sp, new_const, 0);
+                    if (new_const_ref == EXPR_NULL) { free(buf); return NULL; }
+
+                    ExprKind lk = *(ExprKind *)POOL_PTR(sp, e->lhs);
+                    ExprRef new_root;
+                    if (lk == EXPR_VAR) {
+                        /* var op const -> var op new_const */
+                        new_root = expr_binary(sp, e->op, e->lhs, new_const_ref);
+                    } else {
+                        /* const op var -> new_const op var */
+                        new_root = expr_binary(sp, e->op, new_const_ref, e->rhs);
+                    }
+                    if (new_root == EXPR_NULL) { free(buf); return NULL; }
+                    root = new_root;
+                }
+            }
+
+            problem_add_constraint(sp, root);
+        }
+
+        cref = cs->next;
+    }
+
+    return buf;
+}
+
+/**
+ * Binary search for the minimum relaxation of a constraint constant.
+ */
+static int _relax_search(SolveProblem *orig,
+                          const uint32_t *mus_cids, uint32_t mus_size,
+                          uint32_t target_cid,
+                          ClassifyResult *cls,
+                          ContraRelaxSuggestion *out) {
+    out->constraint_id = target_cid;
+    out->original_constant = cls->original_const;
+    out->is_relaxable = cls->is_relaxable;
+    out->relax_direction = cls->relax_direction;
+
+    if (!cls->is_relaxable) {
+        out->relaxed_constant = cls->original_const;
+        out->delta = 0;
+        return 0;
+    }
+
+    /* infeasible_val = original constant (part of MUS, causes conflict)
+     * feasible_val  = widely relaxed constant (should be feasible)
+     * Binary search converges to the tightest feasible value. */
+    int64_t infeasible_val, feasible_val;
+
+    switch (cls->relax_direction) {
+    case 0: /* increase (e.g., var <= C -> increase C) */
+        infeasible_val = cls->original_const;
+        feasible_val   = cls->original_const + 10000;
+        break;
+    case 1: /* decrease (e.g., var >= C -> decrease C) */
+        infeasible_val = cls->original_const;
+        feasible_val   = cls->original_const - 10000;
+        break;
+    case 2: /* both (e.g., var == C) -- search increase direction */
+        infeasible_val = cls->original_const;
+        feasible_val   = cls->original_const + 10000;
+        break;
+    default:
+        return -1;
+    }
+
+    /* Verify the feasible end is actually feasible */
+    {
+        void *buf = _build_relaxed_subproblem(orig, mus_cids, mus_size,
+                                               target_cid, feasible_val);
+        if (!buf) return -1;
+        SolveProblem *sub = (SolveProblem *)buf;
+
+        SolverInstance si;
+        int rc = _solver_create(&si, sub);
+        int feasible = 0;
+        if (rc >= 0 && rc != -2) {
+            si.ctx->assumption_active_mask = 0;
+            uint32_t saved = si.ctx->n_assumptions;
+            si.ctx->n_assumptions = 0;
+            SolveOpts sopts;
+            memset(&sopts, 0, sizeof(sopts));
+            sopts.max_conflicts = 10000;
+            sopts.max_restarts = 50;
+            feasible = (solver_solve(si.ctx, &sopts) == SOLVE_OK);
+            si.ctx->n_assumptions = saved;
+        } else if (rc == -2) {
+            feasible = 0;
+        }
+        _solver_destroy(&si);
+        free(buf);
+
+        if (!feasible) {
+            /* Can't find feasible bound; report non-relaxable */
+            out->relaxed_constant = cls->original_const;
+            out->delta = 0;
+            out->is_relaxable = 0;
+            return 0;
+        }
+    }
+
+    /* Binary search: converge infeasible_val and feasible_val */
+    for (int iter = 0; iter < 64; iter++) {
+        int64_t gap = feasible_val > infeasible_val
+                    ? feasible_val - infeasible_val
+                    : infeasible_val - feasible_val;
+        if (gap <= 1) break;
+
+        int64_t mid = infeasible_val + (feasible_val - infeasible_val) / 2;
+
+        void *buf = _build_relaxed_subproblem(orig, mus_cids, mus_size,
+                                               target_cid, mid);
+        if (!buf) break;
+        SolveProblem *sub = (SolveProblem *)buf;
+
+        SolverInstance si;
+        int rc = _solver_create(&si, sub);
+        int feasible = 0;
+        if (rc >= 0 && rc != -2) {
+            uint32_t saved = si.ctx->n_assumptions;
+            si.ctx->n_assumptions = 0;
+            SolveOpts sopts;
+            memset(&sopts, 0, sizeof(sopts));
+            sopts.max_conflicts = 10000;
+            sopts.max_restarts = 50;
+            feasible = (solver_solve(si.ctx, &sopts) == SOLVE_OK);
+            si.ctx->n_assumptions = saved;
+        }
+        _solver_destroy(&si);
+        free(buf);
+
+        if (feasible) {
+            feasible_val = mid;  /* mid works, try closer to original */
+        } else {
+            infeasible_val = mid;  /* still infeasible, relax more */
+        }
+    }
+
+    out->relaxed_constant = feasible_val;
+    out->delta = feasible_val - cls->original_const;
+    return 0;
+}
+
+/* ---- contra_compute_relaxations (T-29) ---- */
+
 int contra_compute_relaxations(SolveCtx *ctx, SolveProblem *sp,
                                 const uint32_t *mus_ids, uint32_t mus_size,
                                 const ContraOpts *opts, ContraRelaxSuggestion *out) {
-    (void)ctx; (void)sp; (void)mus_ids; (void)mus_size; (void)opts;
-    if (out && mus_size > 0) memset(out, 0, mus_size * sizeof(*out));
-    return -1;
+    (void)ctx; (void)opts;
+    if (!sp || !mus_ids || !out || mus_size == 0) return -1;
+
+    memset(out, 0, mus_size * sizeof(*out));
+
+    /* For each MUS constraint, classify and search for relaxation */
+    ExprRef cref = sp->constraints_head;
+    while (cref != EXPR_NULL) {
+        ConstraintSpec *cs = (ConstraintSpec *)POOL_PTR(sp, cref);
+
+        /* Is this constraint in the MUS? */
+        uint32_t mus_idx = UINT32_MAX;
+        for (uint32_t i = 0; i < mus_size; i++) {
+            if (mus_ids[i] == cs->constraint_id) { mus_idx = i; break; }
+        }
+
+        if (mus_idx != UINT32_MAX) {
+            ClassifyResult cls;
+            if (_classify_constraint(sp, cs->root, &cls) == 0 && cls.is_relaxable) {
+                _relax_search(sp, mus_ids, mus_size,
+                              cs->constraint_id, &cls, &out[mus_idx]);
+            } else {
+                out[mus_idx].constraint_id = cs->constraint_id;
+                out[mus_idx].is_relaxable = 0;
+            }
+        }
+
+        cref = cs->next;
+    }
+
+    return 0;
 }
 
 #endif /* ZSP_CONTRADICTION_ANALYSIS */
