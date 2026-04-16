@@ -599,9 +599,144 @@ void contra_result_free(ContraResult *result) {
 
 int contra_explain_soft(SolveCtx *ctx, SolveProblem *sp,
                          const ContraOpts *opts, ContraSoftDiagResult *result) {
-    (void)ctx; (void)sp; (void)opts;
-    if (result) memset(result, 0, sizeof(*result));
-    return -1;
+    if (!ctx || !sp || !result) return -1;
+    memset(result, 0, sizeof(*result));
+
+    struct timespec t0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+
+    /* Identify relaxed soft constraints */
+    uint32_t n_relaxed = 0;
+    uint32_t relaxed_indices[64];
+
+    for (uint32_t i = 0; i < ctx->n_assumptions; i++) {
+        if (!(ctx->assumption_active_mask & (1ULL << i))) {
+            if (n_relaxed < 64)
+                relaxed_indices[n_relaxed++] = i;
+        }
+    }
+
+    if (n_relaxed == 0) return 0;  /* nothing relaxed */
+
+    /* Allocate result entries */
+    result->entries = (ContraSoftDiagEntry *)calloc(
+        n_relaxed, sizeof(ContraSoftDiagEntry));
+    if (!result->entries) return -1;
+    result->n_entries = n_relaxed;
+
+    /* For each relaxed soft, build {soft + all hard} and find MUS */
+    for (uint32_t ri = 0; ri < n_relaxed; ri++) {
+        uint32_t soft_idx = relaxed_indices[ri];
+        ContraSoftDiagEntry *entry = &result->entries[ri];
+
+        /* Get the soft's priority from the compiled context */
+        entry->soft_constraint_id = soft_idx + 1;  /* 1-based */
+        entry->soft_priority = ctx->assumption_priorities
+                             ? ctx->assumption_priorities[soft_idx] : 0;
+
+        /* Build a sub-problem with all hard constraints + this one soft
+         * treated as hard. Walk the original problem's constraint and
+         * soft lists. */
+        uint32_t orig_pool_used = zsp_pool_used(&sp->pool);
+        size_t buf_size = sizeof(SolveProblem) + orig_pool_used +
+                          (sp->n_constraints + 1) * 64 + 4096;
+        void *buf = malloc(buf_size);
+        if (!buf) continue;
+
+        SolveProblem *sub = solve_problem_init(buf, buf_size);
+        if (!sub) { free(buf); continue; }
+
+        /* Copy pool data */
+        uint8_t *dst = (uint8_t *)&sub->pool + sizeof(zsp_pool_t);
+        uint8_t *src = (uint8_t *)&sp->pool + sizeof(zsp_pool_t);
+        memcpy(dst, src, orig_pool_used);
+        sub->pool.used = orig_pool_used;
+
+        sub->n_vars = sp->n_vars;
+        sub->vars_head = sp->vars_head;
+        sub->n_alldiffs = sp->n_alldiffs;
+        sub->allDiff_head = sp->allDiff_head;
+        sub->n_dists = sp->n_dists;
+        sub->dists_head = sp->dists_head;
+        sub->n_constraints = 0;
+        sub->constraints_head = EXPR_NULL;
+        sub->n_softs = 0;
+        sub->softs_head = EXPR_NULL;
+
+        /* Add all hard constraints */
+        ExprRef cref = sp->constraints_head;
+        while (cref != EXPR_NULL) {
+            ConstraintSpec *cs = (ConstraintSpec *)POOL_PTR(sp, cref);
+            problem_add_constraint(sub, cs->root);
+            cref = cs->next;
+        }
+
+        /* Add the target soft constraint as hard.
+         * Walk the soft list to find the one at soft_idx. */
+        {
+            ExprRef sref = sp->softs_head;
+            uint32_t sidx = 0;
+            /* The softs list is LIFO, so the compile order is reversed.
+             * The compiler assigns assumption indices from softs_head
+             * order. soft_idx 0 = first in softs_head walk. */
+            while (sref != EXPR_NULL) {
+                SoftSpec *ss = (SoftSpec *)POOL_PTR(sp, sref);
+                if (sidx == soft_idx) {
+                    problem_add_constraint(sub, ss->root);
+                    break;
+                }
+                sidx++;
+                sref = ss->next;
+            }
+        }
+
+        /* Run contra_analyze_unsat on the sub-problem */
+        ContraResult sub_result;
+        memset(&sub_result, 0, sizeof(sub_result));
+        int rc = contra_analyze_unsat(NULL, sub, opts, &sub_result);
+
+        if (rc == 0 && sub_result.mus_size > 0) {
+            /* Copy conflict hard IDs (exclude the soft's own ID) */
+            entry->conflict_hard_ids = (uint32_t *)malloc(
+                sub_result.mus_size * sizeof(uint32_t));
+            if (entry->conflict_hard_ids) {
+                uint32_t n = 0;
+                for (uint32_t i = 0; i < sub_result.mus_size; i++) {
+                    entry->conflict_hard_ids[n++] =
+                        sub_result.mus_constraint_ids[i];
+                }
+                entry->n_conflict_hard = n;
+            }
+
+            /* Copy proof text */
+            if (sub_result.proof_text) {
+                entry->proof_text = (char *)malloc(
+                    strlen(sub_result.proof_text) + 1);
+                if (entry->proof_text)
+                    strcpy(entry->proof_text, sub_result.proof_text);
+            }
+
+            /* Copy hard relaxation suggestions */
+            if (sub_result.n_relaxations > 0 && sub_result.relaxations) {
+                entry->hard_relax = (ContraRelaxSuggestion *)malloc(
+                    sub_result.n_relaxations * sizeof(ContraRelaxSuggestion));
+                if (entry->hard_relax) {
+                    memcpy(entry->hard_relax, sub_result.relaxations,
+                           sub_result.n_relaxations * sizeof(ContraRelaxSuggestion));
+                    entry->n_hard_relax = sub_result.n_relaxations;
+                }
+            }
+        }
+
+        contra_result_free(&sub_result);
+        free(buf);
+    }
+
+    struct timespec t1;
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    result->elapsed_sec = (t1.tv_sec - t0.tv_sec) +
+                          (t1.tv_nsec - t0.tv_nsec) / 1e9;
+    return 0;
 }
 
 void contra_soft_diag_free(ContraSoftDiagResult *result) {
