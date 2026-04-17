@@ -73,6 +73,7 @@ typedef struct SolveCtx {
     uint32_t          *prop_refs;     /* pool offsets of propagators   */
     uint32_t           n_prop_refs_capacity;
     uint32_t          *prop_guard_vars; /* guard var per prop, EXPR_NULL=unconditional */
+    uint32_t          *prop_constraint_id; /* constraint_id for each propagator */
     PropQueue          queue;         /* 16-level priority queue       */
     uint64_t           unassigned_mask; /* bit i set = var i unassigned */
     Variable          *initial_vars;  /* saved copy at post-compile     */
@@ -90,6 +91,12 @@ typedef struct SolveCtx {
      * NULL if aliasing is not enabled. */
     uint32_t          *var_alias;
     uint32_t           _pad;          /* keep pool 16-byte aligned     */
+    /* LCG solver fields */
+    uint32_t           current_prop_ref;  /* prop being fired (for trail) */
+    uint32_t           conflict_prop_ref; /* prop that caused conflict    */
+    /* Custom value selector hook (for cost-guided search) */
+    int64_t          (*value_selector_fn)(struct SolveCtx *, uint32_t, void *);
+    void              *value_selector_data;
     zsp_pool_t         pool;          /* MUST be last field            */
     /* static pool data region follows immediately                      */
 } SolveCtx;
@@ -184,6 +191,9 @@ uint32_t  zsp_ctx_decision_level(const SolveCtx *ctx);
 
 /** Return the total trail entry count. */
 uint64_t  zsp_ctx_trail_count(const SolveCtx *ctx);
+
+/** Return the constraint_id for propagator prop_idx, or 0 if unknown/out-of-range. */
+uint32_t  zsp_prop_constraint_id(const SolveCtx *ctx, uint32_t prop_idx);
 
 /* ------------------------------------------------------------------ */
 /* Inline accessors for use in C propagator code                      */

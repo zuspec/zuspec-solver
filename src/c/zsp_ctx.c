@@ -131,3 +131,9 @@ uint32_t zsp_ctx_decision_level(const SolveCtx *ctx) {
 uint64_t zsp_ctx_trail_count(const SolveCtx *ctx) {
     return ctx->trail_count;
 }
+
+uint32_t zsp_prop_constraint_id(const SolveCtx *ctx, uint32_t prop_idx) {
+    if (!ctx->prop_constraint_id || prop_idx >= ctx->n_prop_refs_capacity)
+        return 0;
+    return ctx->prop_constraint_id[prop_idx];
+}

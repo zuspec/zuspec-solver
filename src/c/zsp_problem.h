@@ -209,6 +209,7 @@ typedef struct {
 typedef struct {
     ExprRef  next;  /* next ConstraintSpec, or EXPR_NULL */
     ExprRef  root;  /* root ExprRef of the expression    */
+    uint32_t constraint_id; /* user-visible constraint ID (contradiction analysis) */
 } ConstraintSpec;
 
 /**
@@ -240,6 +241,7 @@ typedef struct {
     ExprRef  next;       /* next SoftSpec, or EXPR_NULL */
     ExprRef  root;       /* root ExprRef of the constraint expression */
     uint32_t priority;   /* 0 = highest priority, larger = relaxed first */
+    uint32_t constraint_id; /* original hard constraint ID (contradiction analysis) */
 } SoftSpec;
 
 /**
@@ -288,6 +290,7 @@ typedef struct {
     ExprRef    softs_head;         /* head of SoftSpec linked list       */
     uint32_t   n_dists;            /* number of distribution constraints */
     ExprRef    dists_head;         /* head of DistSpec linked list       */
+    uint32_t   next_constraint_id; /* auto-incrementing constraint ID counter */
     zsp_pool_t pool;              /* MUST be last field                */
     /* pool data region follows immediately in the same buffer         */
 } SolveProblem;

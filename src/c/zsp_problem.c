@@ -35,6 +35,7 @@ SolveProblem *solve_problem_init(void *buf, size_t buf_size) {
     sp->softs_head       = EXPR_NULL;
     sp->n_dists          = 0;
     sp->dists_head       = EXPR_NULL;
+    sp->next_constraint_id = 0;
 
     size_t pool_buf_size = buf_size - pool_offset;
     if (!zsp_pool_init(&sp->pool, pool_buf_size))
@@ -64,6 +65,7 @@ void solve_problem_reset(SolveProblem *sp) {
     sp->softs_head       = EXPR_NULL;
     sp->n_dists          = 0;
     sp->dists_head       = EXPR_NULL;
+    sp->next_constraint_id = 0;
     zsp_pool_reset(&sp->pool);
 }
 
@@ -284,6 +286,7 @@ ExprRef problem_add_constraint(SolveProblem *sp, ExprRef root) {
     ConstraintSpec *c     = (ConstraintSpec *)POOL_PTR(sp, ref);
     c->next               = sp->constraints_head;
     c->root               = root;
+    c->constraint_id      = ++sp->next_constraint_id;
     sp->constraints_head  = ref;
     sp->n_constraints++;
     return ref;

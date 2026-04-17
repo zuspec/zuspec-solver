@@ -158,6 +158,25 @@ def _wire_argtypes(lib: ctypes.CDLL) -> None:
     lib.zsp_var_hi32.restype  = c.c_int32
     lib.zsp_var_hi32.argtypes = [c.c_void_p, c.c_uint32]
 
+    lib.zsp_prop_constraint_id.restype  = c.c_uint32
+    lib.zsp_prop_constraint_id.argtypes = [c.c_void_p, c.c_uint32]
+
+    # Placement propagators
+    lib.prop_add_min_of_n_32.restype  = c.c_uint32
+    lib.prop_add_min_of_n_32.argtypes = [c.c_void_p, c.c_uint32, c.c_uint32,
+                                          c.POINTER(c.c_uint32), c.c_uint8]
+    lib.prop_add_max_of_n_32.restype  = c.c_uint32
+    lib.prop_add_max_of_n_32.argtypes = [c.c_void_p, c.c_uint32, c.c_uint32,
+                                          c.POINTER(c.c_uint32), c.c_uint8]
+    lib.prop_add_no_overlap_2d.restype  = c.c_uint32
+    lib.prop_add_no_overlap_2d.argtypes = [c.c_void_p, c.c_uint32, c.c_void_p,
+                                            c.c_uint8]
+    lib.solver_optimize.restype  = c.c_int
+    lib.solver_optimize.argtypes = [c.c_void_p, c.c_uint32,
+                                     c.c_void_p, c.c_void_p]
+    lib.solver_set_value_selector.restype  = None
+    lib.solver_set_value_selector.argtypes = [c.c_void_p, c.c_void_p, c.c_void_p]
+
 
 def _load_lib() -> Optional[ctypes.CDLL]:
     """Return the cached CDLL handle, loading it on first call.
