@@ -166,6 +166,11 @@ def _wire_argtypes(lib: ctypes.CDLL) -> None:
                                          c.c_uint32, c.c_void_p,
                                          c.c_uint8]
 
+    lib.prop_add_sum_eq_32.restype  = c.c_uint32
+    lib.prop_add_sum_eq_32.argtypes = [c.c_void_p, c.c_uint32,
+                                       c.c_uint32, c.c_void_p,
+                                       c.c_uint8]
+
     lib.prop_add_no_overlap_2d.restype  = c.c_uint32
     lib.prop_add_no_overlap_2d.argtypes = [c.c_void_p, c.c_uint32,
                                            c.c_void_p, c.c_uint8]

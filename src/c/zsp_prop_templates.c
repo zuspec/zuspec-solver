@@ -1856,42 +1856,40 @@ static PropResult _fire_sum_eq_32(Propagator *self, SolveCtx *ctx) {
     SumEq_32_t *s = (SumEq_32_t *)self;
     uint32_t n = s->n_vars;  /* total watches: [0]=result, [1..n-1]=summands */
     uint32_t rid = s->var_ids[0];
-    uint32_t n_sum = n - 1;
 
-    /* Compute sum of lower bounds and sum of upper bounds */
+    /* Compute sum of lower bounds and sum of upper bounds.
+     * Use var_lo64/var_hi64 to correctly handle tier-0 (32-bit signed/unsigned)
+     * and tier-1 (32-bit unsigned promoted to 64-bit) variable storage. */
     int64_t sum_lo = 0, sum_hi = 0;
     for (uint32_t i = 1; i < n; i++) {
-        Variable *v = &ctx->vars[s->var_ids[i]];
-        sum_lo += (int64_t)v->lo;
-        sum_hi += (int64_t)v->hi;
+        sum_lo += var_lo64(ctx, &ctx->vars[s->var_ids[i]]);
+        sum_hi += var_hi64(ctx, &ctx->vars[s->var_ids[i]]);
     }
 
     /* Forward: tighten result bounds */
     PropResult r;
-    if ((r = ctx_tighten_lb32(ctx, rid, (int32_t)(sum_lo > INT32_MIN ? sum_lo : INT32_MIN))) != PROP_OK) return r;
-    if ((r = ctx_tighten_ub32(ctx, rid, (int32_t)(sum_hi < INT32_MAX ? sum_hi : INT32_MAX))) != PROP_OK) return r;
+    if ((r = ctx_tighten_lb64(ctx, rid, sum_lo)) != PROP_OK) return r;
+    if ((r = ctx_tighten_ub64(ctx, rid, sum_hi)) != PROP_OK) return r;
 
     /* Backward: for each summand i, tighten using
      *   xi_lo >= result_lo - sum_of_others_hi
      *   xi_hi <= result_hi - sum_of_others_lo */
-    Variable *rv = &ctx->vars[rid];
-    int64_t r_lo = (int64_t)rv->lo;
-    int64_t r_hi = (int64_t)rv->hi;
+    int64_t r_lo = var_lo64(ctx, &ctx->vars[rid]);
+    int64_t r_hi = var_hi64(ctx, &ctx->vars[rid]);
 
     for (uint32_t i = 1; i < n; i++) {
         /* sum of all OTHER summands' bounds */
-        int64_t others_lo = sum_lo - (int64_t)ctx->vars[s->var_ids[i]].lo;
-        int64_t others_hi = sum_hi - (int64_t)ctx->vars[s->var_ids[i]].hi;
+        int64_t vi_lo = var_lo64(ctx, &ctx->vars[s->var_ids[i]]);
+        int64_t vi_hi = var_hi64(ctx, &ctx->vars[s->var_ids[i]]);
+        int64_t others_lo = sum_lo - vi_lo;
+        int64_t others_hi = sum_hi - vi_hi;
 
         int64_t new_lo = r_lo - others_hi;
         int64_t new_hi = r_hi - others_lo;
 
-        if (new_lo > INT32_MIN) {
-            if ((r = ctx_tighten_lb32(ctx, s->var_ids[i], (int32_t)new_lo)) != PROP_OK) return r;
-        }
-        if (new_hi < INT32_MAX) {
-            if ((r = ctx_tighten_ub32(ctx, s->var_ids[i], (int32_t)new_hi)) != PROP_OK) return r;
-        }
+        if ((r = ctx_tighten_lb64(ctx, s->var_ids[i], new_lo)) != PROP_OK) return r;
+        if ((r = ctx_tighten_ub64(ctx, s->var_ids[i], new_hi)) != PROP_OK) return r;
+    }
     }
 
     return PROP_OK;
