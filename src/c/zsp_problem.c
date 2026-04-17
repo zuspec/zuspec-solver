@@ -284,8 +284,6 @@ ExprRef problem_add_constraint(SolveProblem *sp, ExprRef root) {
     ConstraintSpec *c     = (ConstraintSpec *)POOL_PTR(sp, ref);
     c->next               = sp->constraints_head;
     c->root               = root;
-    c->constraint_id      = sp->n_constraints + 1;  /* auto-assign from 1 */
-    c->_cs_pad            = 0;
     sp->constraints_head  = ref;
     sp->n_constraints++;
     return ref;
@@ -335,7 +333,6 @@ ExprRef problem_add_soft_constraint(SolveProblem *sp, ExprRef root,
     s->next           = sp->softs_head;
     s->root           = root;
     s->priority       = priority;
-    s->constraint_id  = sp->n_softs + 1;  /* auto-assign from 1 */
     sp->softs_head    = ref;
     sp->n_softs++;
     return ref;

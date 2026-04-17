@@ -65,29 +65,3 @@ Any propagator can be guard-gated via `prop_set_guard(ctx, prop_ref, guard_var_i
 - Guard undecided (lo != hi): propagator is skipped until the guard is decided.
 
 Used internally by ITE-at-constraint-root and soft constraint compilation.
-
-## Explanation Support
-
-All propagators have `explain()` callbacks for LCG conflict analysis
-and contradiction proof extraction. The callbacks are registered via
-`contra_register_explanations()` (in `zsp_prop_templates.c`).
-
-| Type | Explain Strategy |
-|------|-----------------|
-| `BoundsLE/LT` | Reason is the opposing variable's bound. |
-| `BoundsEQ` | Reason is the other variable's matching bound. |
-| `BoundsNE` | Reason is the other variable being singleton at the excluded value. |
-| `BoundsAdd` | Reason is both summand bounds (or result + other summand). |
-| `BoundsMul/Div/Mod` | Conservative: both operand bounds as antecedents. |
-| `UnaryNeg` | r_lo = -a_hi: reason is a's UB. Symmetric. |
-| `Implication` | Reason is guard >= 1. |
-| `ITE` | Three cases: cond=1 (then-branch bounds), cond=0 (else-branch bounds), undecided (both). |
-| `Reification/ReificationEq` | Guard tightened: x and y bounds. Variable tightened: guard bounds. |
-| `InSet` | Current variable bounds as antecedents. |
-| `AllDifferent` | Singleton exclusion: other singleton variables as antecedents. |
-| `DisjClause` | All falsified clause variables' bounds. |
-| `SumEq` | All other summand bounds. |
-| `Bitwise (BAND/BOR/BXOR/SHL/LSHR/Concat)` | Both operand bounds. |
-| `BNOT` | Source variable's opposing bound. |
-| `Countones/Clog2` | Source operand bounds. |
-| `BitSlice` | Source variable bounds. |

@@ -509,8 +509,6 @@ ExprRef builder_add_constraint(SolveProblemBuilder *b, ExprRef root) {
     ConstraintSpec *c = (ConstraintSpec *)_block_ptr_at(b->current, local);
     c->next              = b->constraints_head;
     c->root              = root;
-    c->constraint_id     = b->n_constraints + 1;
-    c->_cs_pad           = 0;
     b->constraints_head  = ref;
     b->n_constraints++;
     return ref;
@@ -568,7 +566,6 @@ ExprRef builder_add_soft_constraint(SolveProblemBuilder *b, ExprRef root,
     s->next       = b->softs_head;
     s->root       = root;
     s->priority   = priority;
-    s->constraint_id = b->n_softs + 1;
     b->softs_head = ref;
     b->n_softs++;
     return ref;

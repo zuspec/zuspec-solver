@@ -152,65 +152,6 @@ def _wire_argtypes(lib: ctypes.CDLL) -> None:
     lib.solver_propagate_only.restype  = c.c_int
     lib.solver_propagate_only.argtypes = [c.c_void_p]
 
-    lib.solver_pin_var.restype  = c.c_int
-    lib.solver_pin_var.argtypes = [c.c_void_p, c.c_uint32, c.c_int64]
-
-    # Placement extensions (zsp_placement.h)
-    lib.prop_add_min_of_n_32.restype  = c.c_uint32
-    lib.prop_add_min_of_n_32.argtypes = [c.c_void_p, c.c_uint32,
-                                         c.c_uint32, c.c_void_p,
-                                         c.c_uint8]
-
-    lib.prop_add_max_of_n_32.restype  = c.c_uint32
-    lib.prop_add_max_of_n_32.argtypes = [c.c_void_p, c.c_uint32,
-                                         c.c_uint32, c.c_void_p,
-                                         c.c_uint8]
-
-    lib.prop_add_sum_eq_32.restype  = c.c_uint32
-    lib.prop_add_sum_eq_32.argtypes = [c.c_void_p, c.c_uint32,
-                                       c.c_uint32, c.c_void_p,
-                                       c.c_uint8]
-
-    lib.prop_add_no_overlap_2d.restype  = c.c_uint32
-    lib.prop_add_no_overlap_2d.argtypes = [c.c_void_p, c.c_uint32,
-                                           c.c_void_p, c.c_uint8]
-
-    lib.solver_optimize.restype  = c.c_int
-    lib.solver_optimize.argtypes = [c.c_void_p, c.c_uint32,
-                                    c.c_void_p, c.c_void_p]
-
-    # CostGuided value selector
-    _COST_FUNC = c.CFUNCTYPE(c.c_int64, c.c_void_p,
-                              c.c_uint32, c.c_int64, c.c_void_p)
-    lib.solver_set_cost_guided.restype  = None
-    lib.solver_set_cost_guided.argtypes = [c.c_void_p, _COST_FUNC,
-                                           c.c_void_p, c.c_int32]
-
-    lib.hpwl_cost_ctx_build_index.restype  = c.c_int
-    lib.hpwl_cost_ctx_build_index.argtypes = [c.c_void_p]
-
-    lib.hpwl_cost_ctx_destroy.restype  = None
-    lib.hpwl_cost_ctx_destroy.argtypes = [c.c_void_p]
-
-    lib.solver_set_cost_guided_hpwl.restype  = c.c_int
-    lib.solver_set_cost_guided_hpwl.argtypes = [c.c_void_p, c.c_void_p,
-                                                 c.c_int32]
-
-    # Greedy placement + phase hints
-    lib.costguided_greedy_place.restype  = c.c_int
-    lib.costguided_greedy_place.argtypes = [c.c_void_p, c.c_void_p,
-                                             c.c_int32, c.c_void_p]
-
-    lib.solver_set_phase_hints.restype  = c.c_int
-    lib.solver_set_phase_hints.argtypes = [c.c_void_p, c.c_void_p,
-                                            c.c_void_p, c.c_uint32]
-
-    # LNS optimizer
-    lib.solver_lns_optimize.restype  = c.c_int
-    lib.solver_lns_optimize.argtypes = [c.c_void_p, c.c_void_p,
-                                         c.c_void_p, c.c_void_p,
-                                         c.c_void_p]
-
     # Variable query helpers
     lib.zsp_var_lo32.restype  = c.c_int32
     lib.zsp_var_lo32.argtypes = [c.c_void_p, c.c_uint32]

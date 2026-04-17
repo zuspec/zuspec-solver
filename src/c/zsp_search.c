@@ -6,9 +6,6 @@
 #include "zsp_propagator.h"
 #include "zsp_trail.h"
 #include "zsp_shave.h"
-#include "zsp_lcg.h"
-
-#include <stdlib.h>
 
 /* Forward declarations for hole management */
 static int _is_hole(const SolveCtx *ctx, uint32_t var_id, int64_t value);
@@ -57,9 +54,6 @@ static int64_t _rand_range64(SolveCtx *ctx, int64_t lo, int64_t hi) {
 /* ------------------------------------------------------------------ */
 
 static uint32_t _select_unassigned(SolveCtx *ctx) {
-    /* Keep MRV for variable selection even with LCG.
-     * VSIDS is maintained for activity bumping during conflict analysis
-     * but MRV is a better heuristic for placement problems. */
     uint32_t best      = EXPR_NULL;
     int64_t  best_dom  = INT64_MAX;
 
@@ -200,14 +194,6 @@ static int64_t _pick_value(SolveCtx *ctx, uint32_t var_id,
     int64_t lo = var_lo64(ctx, &ctx->vars[var_id]);
     int64_t hi = var_hi64(ctx, &ctx->vars[var_id]);
 
-    /* Custom value selector (e.g. wire mask for placement) */
-    if (ctx->value_selector) {
-        int64_t v = ctx->value_selector(ctx, var_id, ctx->value_selector_data);
-        if (v >= lo && v <= hi && !_is_hole(ctx, var_id, v))
-            return v;
-        /* Fall through to default if callback returned out-of-range */
-    }
-
     /* Phase saving: try the last saved value if still in domain. */
     if (opts && opts->use_phase_save && ctx->phase_save) {
         int64_t ps = ctx->phase_save[var_id];
@@ -262,9 +248,6 @@ static SolveResult _solver_solve_core(SolveCtx *ctx, const SolveOpts *opts) {
     uint32_t luby_limit     = (max_conflicts > 0)
                               ? _luby(luby_idx) * max_conflicts
                               : UINT32_MAX;
-    /* Track whether LCG was auto-activated during this solve */
-    int lcg_auto_activated = 0;
-    #define LCG_ACTIVATION_THRESHOLD 100u  /* restarts before auto-activating LCG */
 
     /* Level-0 BCP */
     if (solver_propagate(ctx) == PROP_CONFLICT) return SOLVE_UNSAT;
@@ -302,8 +285,6 @@ static SolveResult _solver_solve_core(SolveCtx *ctx, const SolveOpts *opts) {
         if (pr == PROP_OK) pr = ctx_tighten_ub64(ctx, x_id, v);
         if (pr == PROP_OK) {
             pr = solver_propagate(ctx);
-            /* Clause propagation is now event-driven via ctx_tighten
-             * notifications -- no separate call needed here. */
         }
 
         /* ── Conflict loop ── */
@@ -312,101 +293,6 @@ static SolveResult _solver_solve_core(SolveCtx *ctx, const SolveOpts *opts) {
             local_conflicts++;
 
             uint32_t cur = ctx->decision_level;
-
-            /* ── LCG conflict analysis + non-chronological backjump ── */
-            if (ctx->lcg_ctx) {
-                LCGCtx *lcg = (LCGCtx *)ctx->lcg_ctx;
-                Literal learnt[MAX_CLAUSE_LITS];
-                uint32_t n_learnt = 0, bt_level = 0;
-
-                int rc = lcg_analyze_conflict(lcg, ctx, learnt, &n_learnt, &bt_level);
-                /* Guard: reject unit clauses at non-zero levels.
-                 * A valid unit clause means the problem is UNSAT
-                 * from initial domains alone, which should have
-                 * been detected at level 0.  If we learn one at
-                 * a higher level, the explanation is likely wrong. */
-                if (rc == 0 && n_learnt == 1 && bt_level == 0 && cur > 0)
-                    n_learnt = 0;  /* reject, fall through to chronological */
-                if (rc == 0 && n_learnt > 0) {
-                    /* Compute LBD (literal block distance) for clause quality */
-                    uint32_t lbd = 0;
-                    uint8_t level_seen[256];
-                    memset(level_seen, 0, sizeof(level_seen));
-                    for (uint32_t li = 0; li < n_learnt; li++) {
-                        TrailEntry *te = ctx->trail_top;
-                        while (te) {
-                            if (te->var_id == learnt[li].var_id) {
-                                uint16_t tl = te->decision_level;
-                                if (tl < 256 && !level_seen[tl]) {
-                                    level_seen[tl] = 1;
-                                    lbd++;
-                                }
-                                break;
-                            }
-                            te = te->prev;
-                        }
-                    }
-
-                    /* Add learnt clause to the database */
-                    clause_db_add(&lcg->clause_db, n_learnt, learnt,
-                                  lbd > 0 ? lbd : 1);
-                    lcg->n_learnt++;
-
-                    /* Save phase values before backjumping */
-                    if (opts && opts->use_phase_save && ctx->phase_save) {
-                        TrailEntry *te = ctx->trail_top;
-                        while (te && te->decision_level > bt_level) {
-                            uint32_t vid = te->var_id;
-                            if (vid < ctx->n_vars)
-                                ctx->phase_save[vid] = var_lo64(ctx, &ctx->vars[vid]);
-                            te = te->prev;
-                        }
-                    }
-
-                    /* Non-chronological backjump */
-                    if (bt_level > cur) bt_level = cur > 0 ? cur - 1 : 0;
-                    trail_backtrack(ctx, bt_level);
-
-                    /* Re-enqueue all propagators at the backjump level */
-                    for (uint32_t pi = 0; pi < ctx->n_props; pi++) {
-                        if (ctx->prop_refs[pi] != EXPR_NULL) {
-                            Propagator *pp = (Propagator *)zsp_pool_ptr(
-                                &ctx->pool, ctx->prop_refs[pi]);
-                            if (!(pp->flags & PROP_FLAG_ENTAILED))
-                                prop_enqueue(ctx, ctx->prop_refs[pi]);
-                        }
-                    }
-
-                    /* Enforce the asserting literal (first in learnt clause).
-                     * After backjump, it should be the only unresolved literal. */
-                    Literal asserting = learnt[0];
-                    if (asserting.var_id < ctx->n_vars) {
-                        if (asserting.is_lb)
-                            pr = ctx_tighten_lb64(ctx, asserting.var_id,
-                                                  (int64_t)asserting.bound);
-                        else
-                            pr = ctx_tighten_ub64(ctx, asserting.var_id,
-                                                  (int64_t)asserting.bound);
-                    } else {
-                        pr = PROP_OK;
-                    }
-
-                    if (pr == PROP_OK)
-                        pr = solver_propagate(ctx);
-
-                    /* Periodic clause DB garbage collection */
-                    if ((lcg->n_learnt % 1000) == 0 && lcg->n_learnt > 0)
-                        clause_db_gc(&lcg->clause_db, 6);
-
-                    continue;  /* re-enter conflict loop */
-                }
-
-                /* Analysis returned empty clause at level 0: proven UNSAT */
-                if (rc == 0 && n_learnt == 0 && cur == 0)
-                    return SOLVE_UNSAT;
-
-                /* Analysis failed: fall through to chronological backtracking */
-            }
 
             /* Restart check */
             if (max_conflicts > 0 && local_conflicts >= luby_limit) {
@@ -418,13 +304,6 @@ static SolveResult _solver_solve_core(SolveCtx *ctx, const SolveOpts *opts) {
 
                 if (max_restarts > 0 && restart_count >= max_restarts)
                     return SOLVE_TIMEOUT;
-
-                /* Auto-activate LCG after sustained restarts if not already on */
-                if (!lcg_auto_activated && ctx->lcg_ctx == NULL &&
-                    restart_count >= LCG_ACTIVATION_THRESHOLD) {
-                    if (solver_enable_lcg(ctx) == 0)
-                        lcg_auto_activated = 1;
-                }
 
                 pr = solver_propagate(ctx);
                 if (pr == PROP_CONFLICT) return SOLVE_UNSAT;
@@ -754,43 +633,6 @@ static int _insert_hole(SolveCtx *ctx, uint32_t var_id, int64_t value) {
     he->next = cur_off;
     *prev_next_ptr = he_ref;
     return 0;
-}
-
-/* ------------------------------------------------------------------ */
-/* solver_set_value_selector                                           */
-/* ------------------------------------------------------------------ */
-
-void solver_set_value_selector(SolveCtx *ctx,
-                                int64_t (*fn)(SolveCtx *ctx, uint32_t var_id,
-                                              void *user_data),
-                                void *user_data) {
-    if (!ctx) return;
-    ctx->value_selector = fn;
-    ctx->value_selector_data = user_data;
-}
-
-/* ------------------------------------------------------------------ */
-/* solver_enable_lcg / solver_disable_lcg                              */
-/* ------------------------------------------------------------------ */
-
-int solver_enable_lcg(SolveCtx *ctx) {
-    if (!ctx || ctx->lcg_ctx) return -1;
-    LCGCtx *lcg = (LCGCtx *)calloc(1, sizeof(LCGCtx));
-    if (!lcg) return -1;
-    if (lcg_init(lcg, ctx->n_vars) != 0) {
-        free(lcg);
-        return -1;
-    }
-    ctx->lcg_ctx = lcg;
-    return 0;
-}
-
-void solver_disable_lcg(SolveCtx *ctx) {
-    if (!ctx || !ctx->lcg_ctx) return;
-    LCGCtx *lcg = (LCGCtx *)ctx->lcg_ctx;
-    lcg_destroy(lcg);
-    free(lcg);
-    ctx->lcg_ctx = NULL;
 }
 
 int solver_exclude_value(SolveCtx *ctx, uint32_t var_id, int64_t value) {
