@@ -8,7 +8,7 @@ package:
       url: https://github.com/zuspec/zuspec-dataclasses.git
     - name: dv-flow-mgr
       url: https://github.com/dv-flow/dv-flow-mgr.git
-    - name: dv-flow-libhdl
+    - name: dv-flow-libhdlsim
       url: https://github.com/dv-flow/dv-flow-libhdlsim.git
     - name: pytest-dfm
       url: https://github.com/dv-flow/pytest-dfm.git
