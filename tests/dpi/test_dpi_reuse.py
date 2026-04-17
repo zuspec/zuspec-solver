@@ -21,6 +21,7 @@ from .test_dpi_basic import (
     _prepare_sv_dir,
     _build_and_run,
     _parse_sol_lines,
+    _check_sim_result,
 )
 
 
@@ -48,7 +49,7 @@ def test_compile_once_solve_many(hdlsim_dvflow, tmp_path, dpi_lib_dir,
         top_module="PairForReuse_harness", n_solutions=100,
     )
 
-    assert status == 0, f"Simulation failed (status={status})\n{sim_log[-500:]}"
+    _check_sim_result(status, sim_log)
     assert "PASS:" in sim_log
 
     sol_lines = _parse_sol_lines(sim_log)
@@ -70,7 +71,7 @@ def test_different_seeds(hdlsim_dvflow, tmp_path, dpi_lib_dir,
         top_module="PairForReuse_harness", n_solutions=20,
     )
 
-    assert status == 0, f"Simulation failed (status={status})\n{sim_log[-500:]}"
+    _check_sim_result(status, sim_log)
 
     sol_lines = _parse_sol_lines(sim_log)
     # With 20 solutions, we should see at least a few distinct values

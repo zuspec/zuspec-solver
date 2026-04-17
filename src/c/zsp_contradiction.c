@@ -238,8 +238,8 @@ static void _quickxplain(SolverInstance *si,
         /* bg + c1 is SAT -> find necessary in c2 with bg+c1 as background */
         uint32_t *new_bg = (uint32_t *)malloc((n_bg + n_c1) * sizeof(uint32_t));
         if (!new_bg) return;
-        memcpy(new_bg, bg, n_bg * sizeof(uint32_t));
-        memcpy(new_bg + n_bg, c1, n_c1 * sizeof(uint32_t));
+        if (n_bg > 0) memcpy(new_bg, bg, n_bg * sizeof(uint32_t));
+        if (n_c1 > 0) memcpy(new_bg + n_bg, c1, n_c1 * sizeof(uint32_t));
 
         uint32_t mus_before = *out_n;
         _quickxplain(si, new_bg, n_bg + n_c1, c2, n_c2,
@@ -249,8 +249,8 @@ static void _quickxplain(SolverInstance *si,
         uint32_t n_mus2 = *out_n - mus_before;
         uint32_t *new_bg2 = (uint32_t *)malloc((n_bg + n_mus2) * sizeof(uint32_t));
         if (new_bg2) {
-            memcpy(new_bg2, bg, n_bg * sizeof(uint32_t));
-            memcpy(new_bg2 + n_bg, out_mus + mus_before,
+            if (n_bg > 0) memcpy(new_bg2, bg, n_bg * sizeof(uint32_t));
+            if (n_mus2 > 0) memcpy(new_bg2 + n_bg, out_mus + mus_before,
                    n_mus2 * sizeof(uint32_t));
             _quickxplain(si, new_bg2, n_bg + n_mus2, c1, n_c1,
                           out_mus, out_n, max_out, calls, budget, deadline);

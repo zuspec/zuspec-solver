@@ -1890,7 +1890,6 @@ static PropResult _fire_sum_eq_32(Propagator *self, SolveCtx *ctx) {
         if ((r = ctx_tighten_lb64(ctx, s->var_ids[i], new_lo)) != PROP_OK) return r;
         if ((r = ctx_tighten_ub64(ctx, s->var_ids[i], new_hi)) != PROP_OK) return r;
     }
-    }
 
     return PROP_OK;
 }

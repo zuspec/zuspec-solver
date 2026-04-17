@@ -146,9 +146,10 @@ def _build_and_run(hdlsim_dvflow, pkg_dir, harness_dir, c_src_dir,
 
     needs = [sv_pkg, sv_harness]
 
-    if sim == "vlt":
-        # Verilator compiles C as C++; the solver uses C11 features.
-        # Link against the pre-built shared library instead.
+    if sim in ("vlt", "xsm"):
+        # Verilator/Vivado-xsim cannot compile solver C sources directly
+        # (C11 features or C-only compiler path).  Link the pre-built DPI
+        # shared library instead.
         dpi_lib = hdlsim_dvflow.mkTask(
             "std.FileSet",
             name="dpi_lib",
@@ -158,7 +159,7 @@ def _build_and_run(hdlsim_dvflow, pkg_dir, harness_dir, c_src_dir,
         )
         needs.append(dpi_lib)
     else:
-        # Commercial sims compile C sources directly.
+        # ModelSim/Questa (mti) compile C sources directly via vlog.
         c_src = hdlsim_dvflow.mkTask(
             "std.FileSet",
             name="c_src",
@@ -204,6 +205,16 @@ def _parse_sol_lines(sim_log):
     return [line for line in sim_log.splitlines() if "SOL:" in line]
 
 
+def _check_sim_result(status, sim_log):
+    """Assert sim passed; skip if it failed only due to a missing license."""
+    _LICENSE_MSGS = ("Unable to checkout a license", "Invalid license environment")
+    if status != 0:
+        for msg in _LICENSE_MSGS:
+            if msg in sim_log:
+                pytest.skip(f"Simulator license not available: {msg}")
+    assert status == 0, f"Simulation failed (status={status})\n{sim_log[-500:]}"
+
+
 # ------------------------------------------------------------------ #
 # Tests                                                                #
 # ------------------------------------------------------------------ #
@@ -221,7 +232,7 @@ def test_basic_randomize(hdlsim_dvflow, tmp_path, dpi_lib_dir, dpi_lib_path,
         top_module="TwoVars_harness", n_solutions=10,
     )
 
-    assert status == 0, f"Simulation failed (status={status})\n{sim_log[-500:]}"
+    _check_sim_result(status, sim_log)
     assert "PASS:" in sim_log, f"Missing PASS marker in sim log"
 
     sol_lines = _parse_sol_lines(sim_log)
@@ -243,7 +254,7 @@ def test_single_var(hdlsim_dvflow, tmp_path, dpi_lib_dir, dpi_lib_path,
         top_module="SingleVar_harness", n_solutions=10,
     )
 
-    assert status == 0, f"Simulation failed (status={status})\n{sim_log[-500:]}"
+    _check_sim_result(status, sim_log)
     assert "PASS:" in sim_log
 
 
@@ -260,7 +271,7 @@ def test_many_vars(hdlsim_dvflow, tmp_path, dpi_lib_dir, dpi_lib_path,
         top_module="ManyVars_harness", n_solutions=10,
     )
 
-    assert status == 0, f"Simulation failed (status={status})\n{sim_log[-500:]}"
+    _check_sim_result(status, sim_log)
     assert "PASS:" in sim_log
 
 
@@ -277,5 +288,5 @@ def test_seed_determinism(hdlsim_dvflow, tmp_path, dpi_lib_dir, dpi_lib_path,
         top_module="TwoVars_harness", n_solutions=5,
     )
 
-    assert status == 0, f"Simulation failed (status={status})\n{sim_log[-500:]}"
+    _check_sim_result(status, sim_log)
     assert "PASS:" in sim_log
