@@ -14,7 +14,7 @@ from zuspec.dataclasses.solver.core.constraints import (
     CompareConstraint,
     VariableRefConstraint,
 )
-from zuspec.dataclasses.ir.expr import CmpOp
+from zuspec.ir.core.expr import CmpOp
 
 from zuspec.solver.partitioner import Partitioner
 

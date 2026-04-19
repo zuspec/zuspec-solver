@@ -127,10 +127,31 @@ class SolveProblem:
         return self._lib.problem_add_all_different(
             self._sp, ctypes.c_uint32(len(var_ids)), arr
         )
-    # ------------------------------------------------------------------ #
-    # Expression builders                                                  #
-    # ------------------------------------------------------------------ #
 
+    def add_at_least_one(self, var_ids: Sequence[int]) -> int:
+        """Assert that at least one of *var_ids* is non-zero.
+
+        Encodes the constraint ``(v0 != 0) OR (v1 != 0) OR ...`` as a
+        disjunction: OR over (var_i != 0) expressions.  Equivalent to
+        ``sum(var_ids) >= 1`` for boolean variables.
+
+        Args:
+            var_ids: Variable IDs; at least one must be non-zero.
+
+        Returns:
+            ExprRef of the top-level OR constraint, or EXPR_NULL on overflow.
+        """
+        if not var_ids:
+            return EXPR_NULL
+        # Build OR over (var_i != 0) terms.
+        terms = [
+            self.expr_binary(BIN_NEQ, self.expr_var(v), self.expr_const(0))
+            for v in var_ids
+        ]
+        root = terms[0]
+        for t in terms[1:]:
+            root = self.expr_binary(BIN_OR, root, t)
+        return self.add_constraint(root)
     def expr_const(self, value: int, is_signed: bool = False) -> int:
         return self._lib.expr_const(
             self._sp, ctypes.c_int64(value), ctypes.c_uint8(1 if is_signed else 0)

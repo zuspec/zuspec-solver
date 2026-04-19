@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
-from zuspec.dataclasses.ir.expr import BinOp, BoolOp, CmpOp
+from zuspec.ir.core.expr import BinOp, BoolOp, CmpOp
 from zuspec.dataclasses.solver.core.constraints import (
     ConstantConstraint, VariableRefConstraint, BinaryOpConstraint,
     UnaryOpConstraint, BoolOpConstraint, CompareConstraint,

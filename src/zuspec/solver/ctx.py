@@ -170,6 +170,106 @@ class SolveCtx:
         """
         return self._lib.solver_propagate_only(self._ctx)
 
+    def check_unsat(self) -> bool:
+        """Return True iff the current constraint set has no satisfying assignment.
+
+        Calls ``propagate_only()`` first; if propagation detects a conflict the
+        function returns ``True`` immediately without entering CDCL search.
+        Falls through to ``solve()`` only when propagation is inconclusive
+        (domains are non-empty but not fully fixed).
+
+        This is the key primitive for the ODC analysis engine: repeated
+        checkpoint → add_cube_constraint → check_unsat → restore queries can
+        determine whether a candidate cube is disjoint from an observability
+        region without any CDCL overhead for the common (propagation-decisive)
+        case.
+        """
+        result = self._lib.solver_propagate_only(self._ctx)
+        if result == 1:   # PROP_CONFLICT
+            return True
+        if result == 0:   # PROP_OK / all domains fixed → check if SAT
+            return self._lib.solver_solve(self._ctx, ctypes.byref(_SolveOpts())) == SOLVE_UNSAT
+        # Unexpected return code — fall back to solve()
+        return self._lib.solver_solve(self._ctx, ctypes.byref(_SolveOpts())) == SOLVE_UNSAT
+
+    def optimize(
+        self,
+        obj_var: int,
+        minimize: bool = True,
+        lo: int = 0,
+        hi: int = 0x7FFF_FFFF,
+    ) -> "Optional[int]":
+        """Find the optimal value of *obj_var* subject to current constraints.
+
+        Uses binary search over ``solve()`` calls (no native optimize needed).
+        Returns the optimal integer value, or ``None`` if the problem is UNSAT.
+
+        Args:
+            obj_var:  Variable ID to optimise.
+            minimize: If True, minimise; if False, maximise.
+            lo:       Lower bound for binary search (inclusive).
+            hi:       Upper bound for binary search (inclusive).
+        """
+        # Quick feasibility check first.
+        cp = self.checkpoint()
+        test_result = self._lib.solver_solve(self._ctx, ctypes.byref(_SolveOpts()))
+        self.restore(cp)
+        if test_result == SOLVE_UNSAT:
+            return None
+
+        if minimize:
+            best = self.get_value(obj_var)  # any feasible solution is an upper bound
+            lo_cur = lo
+            while lo_cur < best:
+                mid = (lo_cur + best) // 2
+                cp2 = self.checkpoint()
+                # Add constraint obj_var <= mid
+                from .problem import SolveProblem, BIN_LTE
+                aux = SolveProblem()
+                v = aux.add_var(obj_var, width=32, is_signed=False, lo=lo, hi=mid)
+                e_v = aux.expr_var(obj_var)
+                e_mid = aux.expr_const(mid)
+                aux.add_constraint(aux.expr_binary(BIN_LTE, e_v, e_mid))
+                rc = self.add_constraint(aux)
+                if rc == -2:  # UNSAT
+                    self.restore(cp2)
+                    lo_cur = mid + 1
+                else:
+                    r = self._lib.solver_solve(self._ctx, ctypes.byref(_SolveOpts()))
+                    if r == SOLVE_OK:
+                        best = self.get_value(obj_var)
+                        self.restore(cp2)
+                    else:
+                        self.restore(cp2)
+                        lo_cur = mid + 1
+            return best
+        else:
+            # Maximise: symmetric, search from hi down.
+            best = self.get_value(obj_var)
+            hi_cur = hi
+            while best < hi_cur:
+                mid = (best + 1 + hi_cur) // 2
+                cp2 = self.checkpoint()
+                from .problem import SolveProblem, BIN_GTE
+                aux = SolveProblem()
+                v = aux.add_var(obj_var, width=32, is_signed=False, lo=mid, hi=hi)
+                e_v = aux.expr_var(obj_var)
+                e_mid = aux.expr_const(mid)
+                aux.add_constraint(aux.expr_binary(BIN_GTE, e_v, e_mid))
+                rc = self.add_constraint(aux)
+                if rc == -2:
+                    self.restore(cp2)
+                    hi_cur = mid - 1
+                else:
+                    r = self._lib.solver_solve(self._ctx, ctypes.byref(_SolveOpts()))
+                    if r == SOLVE_OK:
+                        best = self.get_value(obj_var)
+                        self.restore(cp2)
+                    else:
+                        self.restore(cp2)
+                        hi_cur = mid - 1
+            return best
+
     def get_value(self, var_id: int) -> int:
         """Return assigned value for var_id after a successful solve."""
         return self._lib.solver_get_value(self._ctx, ctypes.c_uint32(var_id))

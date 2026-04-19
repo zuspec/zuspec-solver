@@ -16,6 +16,7 @@ authors = [
 dependencies = [
     "zuspec-dataclasses",
     "zuspec-be-sv",
+    "zuspec-ir-core",
 ]
 
 [project.optional-dependencies]

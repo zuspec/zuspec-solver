@@ -6,6 +6,8 @@ package:
     deps:
     - name: zuspec-dataclasses
       url: https://github.com/zuspec/zuspec-dataclasses.git
+    - name: zuspec-ir-core
+      url: https://github.com/zuspec/zuspec-ir-core.git
     - name: dv-flow-mgr
       url: https://github.com/dv-flow/dv-flow-mgr.git
     - name: dv-flow-libhdlsim

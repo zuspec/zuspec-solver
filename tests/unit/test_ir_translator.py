@@ -8,7 +8,7 @@ resulting problem can be solved by the native engine.
 from __future__ import annotations
 
 import pytest
-from zuspec.dataclasses.ir.expr import BinOp, UnaryOp, CmpOp, BoolOp
+from zuspec.ir.core.expr import BinOp, UnaryOp, CmpOp, BoolOp
 from zuspec.dataclasses.solver.core.variable import Variable, VarKind
 from zuspec.dataclasses.solver.core.domain import IntDomain
 from zuspec.dataclasses.solver.core.constraint_system import ConstraintSystem
