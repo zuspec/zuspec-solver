@@ -31,6 +31,7 @@ class FlowFieldDescriptor:
     direction: str              # "input" | "output"
     flow_type: str              # "buffer" | "state" | "stream"
     pool: str = ""              # pool name (empty = default pool)
+    is_abstract: bool = False   # True for abstract action types (excluded from ICL as producers)
 
 
 class ICLTable:
@@ -65,9 +66,10 @@ def build_icl_table(
     table = ICLTable()
 
     # Index outputs by (flow_object_type, pool, flow_type)
+    # Abstract actions are excluded as producers since they cannot be instantiated.
     outputs: Dict[Tuple[str, str, str], List[str]] = {}
     for fd in field_descriptors:
-        if fd.direction == "output":
+        if fd.direction == "output" and not fd.is_abstract:
             key = (fd.flow_object_type, fd.pool, fd.flow_type)
             outputs.setdefault(key, []).append(fd.action_type)
 
