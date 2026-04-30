@@ -137,7 +137,11 @@ class IRTranslator:
                 vid = var_id_map[name]
                 vref = sp.expr_var(vid)
                 for used_val in var.randc_state.used_values:
-                    ne_ref = sp.expr_binary(BIN_NEQ, vref, sp.expr_const(used_val))
+                    # BIN_NEQ is buggy; rewrite as (v < used) OR (v > used)
+                    vc = sp.expr_const(used_val)
+                    ne_ref = sp.expr_binary(BIN_OR,
+                        sp.expr_binary(BIN_LT, vref, vc),
+                        sp.expr_binary(BIN_GT, vref, vc))
                     sp.add_constraint(ne_ref)
 
         # Translate constraints
@@ -287,6 +291,11 @@ class IRTranslator:
                 raise TranslationError(
                     f"Unsupported BinOp: {constraint.op}"
                 )
+            if cbin == BIN_NEQ:
+                # BIN_NEQ is buggy in the native solver; rewrite as (a < b) OR (a > b)
+                return sp.expr_binary(BIN_OR,
+                    sp.expr_binary(BIN_LT, lhs, rhs),
+                    sp.expr_binary(BIN_GT, lhs, rhs))
             return sp.expr_binary(cbin, lhs, rhs)
 
         if isinstance(constraint, CompareConstraint):
@@ -297,6 +306,11 @@ class IRTranslator:
                 raise TranslationError(
                     f"Unsupported CmpOp: {constraint.op}"
                 )
+            if cbin == BIN_NEQ:
+                # BIN_NEQ is buggy in the native solver; rewrite as (a < b) OR (a > b)
+                return sp.expr_binary(BIN_OR,
+                    sp.expr_binary(BIN_LT, lhs, rhs),
+                    sp.expr_binary(BIN_GT, lhs, rhs))
             return sp.expr_binary(cbin, lhs, rhs)
 
         if isinstance(constraint, UnaryOpConstraint):

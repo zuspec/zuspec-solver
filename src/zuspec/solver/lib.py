@@ -36,8 +36,8 @@ def _candidate_paths() -> list[Path]:
 
     # 3. Common build directories relative to this file:
     #    packages/zuspec-solver/src/zuspec/solver/lib.py
-    #    → packages/zuspec-solver/  (up 4 levels)
-    pkg_root = Path(__file__).parent.parent.parent.parent.parent
+    #    → packages/zuspec-solver/  (up 4 levels from lib.py)
+    pkg_root = Path(__file__).parent.parent.parent.parent
     for build_name in ("build", "_build", "build_release", "cmake-build-release"):
         candidates.append(pkg_root / build_name)
 

@@ -144,8 +144,11 @@ class SolveProblem:
         if not var_ids:
             return EXPR_NULL
         # Build OR over (var_i != 0) terms.
+        # BIN_NEQ has a native solver bug; use (v < 0) OR (v > 0) instead.
         terms = [
-            self.expr_binary(BIN_NEQ, self.expr_var(v), self.expr_const(0))
+            self.expr_binary(BIN_OR,
+                self.expr_binary(BIN_LT, self.expr_var(v), self.expr_const(0)),
+                self.expr_binary(BIN_GT, self.expr_var(v), self.expr_const(0)))
             for v in var_ids
         ]
         root = terms[0]
