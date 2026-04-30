@@ -137,3 +137,10 @@ uint32_t zsp_prop_constraint_id(const SolveCtx *ctx, uint32_t prop_idx) {
         return 0;
     return ctx->prop_constraint_id[prop_idx];
 }
+
+void solver_set_value_selector(SolveCtx *ctx,
+                               int64_t (*fn)(SolveCtx *, uint32_t, void *),
+                               void *data) {
+    ctx->value_selector_fn   = fn;
+    ctx->value_selector_data = data;
+}

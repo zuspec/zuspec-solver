@@ -8,6 +8,22 @@ from __future__ import annotations
 import warnings
 from typing import Any, Dict, Optional, Tuple
 
+# Hot-path imports: fetched once at module load, not inside the function.
+# Using lazy-import pattern so circular imports are avoided (these modules
+# import from each other), but each symbol is looked up only once.
+_core_solve = None
+_python_backend_mod = None
+
+
+def _ensure_imports():
+    global _core_solve, _python_backend_mod
+    if _core_solve is None:
+        import zuspec.dataclasses.solver._core_solve as _cs
+        import zuspec.dataclasses.solver.backend.python_backend as _pb
+        _core_solve = _cs
+        _python_backend_mod = _pb
+
+
 # Per-class cache: type -> (ConstraintSystem, SolveProblem, var_id_map, fully_native)
 # Keyed by the Python class object so each distinct @dataclass gets one entry.
 # The constraint system is deterministic for a given class; caching it avoids
@@ -78,58 +94,71 @@ class NativeSolverBackend:
         microseconds) rather than re-parsing and re-translating the IR on every
         call.
         """
-        from zuspec.dataclasses.solver._core_solve import (
-            _extract_struct_type,
-            _apply_solution,
-            _solve_constraint_system,
-            RandomizationError,
-        )
-        from zuspec.dataclasses.solver.frontend.constraint_system_builder import (
-            ConstraintSystemBuilder,
-            BuildError,
-        )
-        from .ir_translator import IRTranslator, TranslationError
-        from .ctx import SolveCtx, CompileIncompleteError, CompileUnsatError, SOLVE_OK, SOLVE_UNSAT
+        _ensure_imports()
+        cs = _core_solve
 
         cls = type(obj)
 
+        # ---- Absolute hot path: bound class with cached assignment -----------
+        # This branch is taken on all but the very first call for a given
+        # (class, bound-values) combination.  No imports, no field scan, just
+        # a set membership test + struct-type attribute lookup + cache lookup.
+        if cls in cs._BOUND_CLASSES:
+            struct_type = cs._extract_struct_type(obj)
+            cs.randomize_bound_cached(obj, struct_type, seed, timeout_ms)
+            return
+
         try:
+            from zuspec.dataclasses.solver.frontend.constraint_system_builder import (
+                ConstraintSystemBuilder,
+                BuildError,
+            )
+            from .ir_translator import IRTranslator, TranslationError
+            from .ctx import SolveCtx, CompileIncompleteError, CompileUnsatError, SOLVE_OK, SOLVE_UNSAT
+
+            struct_type = cs._extract_struct_type(obj)
+
+            if cls not in cs._NONBOUND_CLASSES:
+                has_bound = _python_backend_mod._has_bound_object_fields(obj, struct_type)
+                if has_bound:
+                    cs._BOUND_CLASSES.add(cls)
+                    cs.randomize_bound_cached(obj, struct_type, seed, timeout_ms)
+                    return
+                cs._NONBOUND_CLASSES.add(cls)
+
             # ---- Build / retrieve cached (system, sp, var_id_map) --------
             cache_entry = _CLASS_CACHE.get(cls)
             if cache_entry is None:
-                struct_type = _extract_struct_type(obj)
                 builder = ConstraintSystemBuilder()
                 try:
                     system = builder.build_from_struct(struct_type)
                 except BuildError as exc:
-                    raise RandomizationError(
+                    raise cs.RandomizationError(
                         f"Failed to build constraint system: {exc}"
                     ) from exc
 
                 translator = IRTranslator()
                 try:
-                    builder, var_id_map = translator.translate(system)
-                    problem_buf, _buf_size = builder.finalize()
+                    native_builder, var_id_map = translator.translate(system)
+                    problem_buf, _buf_size = native_builder.finalize()
                 except TranslationError as exc:
-                    # Translation failed -- fall back to Python, but don't cache
-                    # so that each call re-tries (in case the error is transient).
                     warnings.warn(
                         f"Native solver: translation failed ({exc}); falling back to Python",
                         stacklevel=3,
                     )
-                    result = _solve_constraint_system(system, seed, timeout_ms)
+                    result = cs._solve_constraint_system(system, seed, timeout_ms)
                     if not result.success:
-                        raise RandomizationError(f"No solution found: {result.error}")
-                    _apply_solution(obj, result.assignment, system)
+                        raise cs.RandomizationError(f"No solution found: {result.error}")
+                    cs._apply_solution(obj, result.assignment, system)
                     return
 
                 # Test-compile once to detect unsupported constraints before caching.
                 try:
                     _probe = SolveCtx(problem_buf)
                     _probe.destroy()
-                    cache_entry = (system, problem_buf, var_id_map, True)  # True = fully native
+                    cache_entry = (system, problem_buf, var_id_map, True)
                 except CompileUnsatError:
-                    raise RandomizationError(
+                    raise cs.RandomizationError(
                         "No solution found: constraints are unsatisfiable"
                     )
                 except CompileIncompleteError as exc:
@@ -137,7 +166,7 @@ class NativeSolverBackend:
                         f"Native solver: {exc}; falling back to Python",
                         stacklevel=3,
                     )
-                    cache_entry = (system, problem_buf, var_id_map, False)  # False = needs Python
+                    cache_entry = (system, problem_buf, var_id_map, False)
 
                 _CLASS_CACHE[cls] = cache_entry
 
@@ -145,29 +174,31 @@ class NativeSolverBackend:
 
             # ---- Python fallback path (cached) ---------------------------
             if not fully_native:
-                result = _solve_constraint_system(system, seed, timeout_ms)
+                result = cs._solve_constraint_system(system, seed, timeout_ms)
                 if not result.success:
-                    raise RandomizationError(f"No solution found: {result.error}")
-                _apply_solution(obj, result.assignment, system)
+                    raise cs.RandomizationError(f"No solution found: {result.error}")
+                cs._apply_solution(obj, result.assignment, system)
                 return
+
 
             # ---- Native solve path (hot path) ----------------------------
             try:
                 ctx_mgr = SolveCtx(problem_buf)
             except CompileUnsatError:
-                raise RandomizationError(
+                raise cs.RandomizationError(
                     "No solution found: constraints are unsatisfiable"
                 )
 
             with ctx_mgr as ctx:
-                actual_seed = seed if seed is not None else 0
+                import random as _random
+                actual_seed = seed if seed is not None else _random.randint(0, 2**31 - 1)
                 rc = ctx.solve(seed=actual_seed)
                 if rc == SOLVE_UNSAT:
-                    raise RandomizationError(
+                    raise cs.RandomizationError(
                         "No solution found: constraints are unsatisfiable"
                     )
                 if rc != SOLVE_OK:
-                    raise RandomizationError(
+                    raise cs.RandomizationError(
                         f"Solver returned unexpected result code {rc}"
                     )
                 assignment = {
@@ -175,12 +206,12 @@ class NativeSolverBackend:
                     for name, vid in var_id_map.items()
                 }
 
-            _apply_solution(obj, assignment, system)
+            cs._apply_solution(obj, assignment, system)
 
-        except RandomizationError:
+        except cs.RandomizationError:
             raise
         except Exception as exc:
-            raise RandomizationError(f"Randomization failed: {exc}") from exc
+            raise cs.RandomizationError(f"Randomization failed: {exc}") from exc
 
     def randomize_with(
         self,
