@@ -10,6 +10,8 @@ package:
       url: https://github.com/zuspec/zuspec-ir-core.git
     - name: dv-flow-mgr
       url: https://github.com/dv-flow/dv-flow-mgr.git
+    - name: dv-solve
+      url: https://github.com/fvutils/dv-solve.git
     - name: dv-flow-libhdlsim
       url: https://github.com/dv-flow/dv-flow-libhdlsim.git
     - name: pytest-dfm
