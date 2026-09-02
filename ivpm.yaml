@@ -2,7 +2,11 @@ package:
   name: zuspec-solver
 
   dep-sets:
-  - name: default-dev
+  - name: use
+    deps: []
+
+  - name: dev
+    uses: [use, dev-tools]
     deps:
     - name: zuspec-dataclasses
       url: https://github.com/zuspec/zuspec-dataclasses.git
@@ -14,7 +18,10 @@ package:
       url: https://github.com/fvutils/dv-solve.git
     - name: dv-flow-libhdlsim
       url: https://github.com/dv-flow/dv-flow-libhdlsim.git
-    - name: pytest-dfm
-      url: https://github.com/dv-flow/pytest-dfm.git
+
+  - name: dev-tools
+    deps:
     - name: pytest
       src: pypi
+    - name: pytest-dfm
+      url: https://github.com/dv-flow/pytest-dfm.git
