@@ -4,6 +4,10 @@ package:
   dep-sets:
   - name: use
     deps: []
+  - name: default 
+    uses: use
+  - name: default-dev
+    uses: dev
 
   - name: dev
     uses: [use, dev-tools]
