@@ -11,6 +11,7 @@ package:
 
   - name: dev
     uses: [use, dev-tools]
+    default-dep-set: default-dev
     deps:
     - name: zuspec-dataclasses
       url: https://github.com/zuspec/zuspec-dataclasses.git
@@ -24,6 +25,7 @@ package:
       url: https://github.com/dv-flow/dv-flow-libhdlsim.git
 
   - name: dev-tools
+    default-dep-set: default
     deps:
     - name: pytest
       src: pypi
