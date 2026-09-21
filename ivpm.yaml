@@ -21,6 +21,7 @@ package:
       url: https://github.com/dv-flow/dv-flow-mgr.git
     - name: dv-solve
       url: https://github.com/fvutils/dv-solve.git
+      dep-set: dev
     - name: dv-flow-libhdlsim
       url: https://github.com/dv-flow/dv-flow-libhdlsim.git
 
