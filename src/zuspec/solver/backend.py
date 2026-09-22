@@ -1,7 +1,7 @@
 """Native solver back-end.
 
 Implements the ``SolverBackend`` protocol from
-``zuspec.dataclasses.solver.backend.base`` using the C native solver.
+``zuspec.be.py.solver.backend.base`` using the C native solver.
 """
 from __future__ import annotations
 
@@ -18,8 +18,8 @@ _python_backend_mod = None
 def _ensure_imports():
     global _core_solve, _python_backend_mod
     if _core_solve is None:
-        import zuspec.dataclasses.solver._core_solve as _cs
-        import zuspec.dataclasses.solver.backend.python_backend as _pb
+        import zuspec.be.py.solver._core_solve as _cs
+        import zuspec.be.py.solver.backend.python_backend as _pb
         _core_solve = _cs
         _python_backend_mod = _pb
 
@@ -109,7 +109,7 @@ class NativeSolverBackend:
             return
 
         try:
-            from zuspec.dataclasses.solver.frontend.constraint_system_builder import (
+            from zuspec.be.py.solver.frontend.constraint_system_builder import (
                 ConstraintSystemBuilder,
                 BuildError,
             )

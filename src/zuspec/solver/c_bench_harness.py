@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 
 from zuspec.ir.core.expr import BinOp, BoolOp, CmpOp
-from zuspec.dataclasses.solver.core.constraints import (
+from zuspec.be.py.solver.core.constraints import (
     ConstantConstraint, VariableRefConstraint, BinaryOpConstraint,
     UnaryOpConstraint, BoolOpConstraint, CompareConstraint,
 )
@@ -40,8 +40,8 @@ class CSolvePerfHarnessGenerator:
 
     def emit(self, cls: type, n_solutions: int = 100000) -> str:
         """Return a complete C source file as a string."""
-        from zuspec.dataclasses.solver._core_solve import _extract_struct_type
-        from zuspec.dataclasses.solver.frontend.constraint_system_builder import (
+        from zuspec.be.py.solver._core_solve import _extract_struct_type
+        from zuspec.be.py.solver.frontend.constraint_system_builder import (
             ConstraintSystemBuilder,
         )
         import zuspec.dataclasses as zdc
@@ -116,8 +116,15 @@ class CSolvePerfHarnessGenerator:
         for name in field_names:
             vid = var_id_map.get(name)
             if vid is not None:
-                fmt_parts.append("%lld")
-                arg_parts.append(f"(long long)solver_get_value(ctx, {vid})")
+                # Unsigned 64-bit values at or above 2^63 must not print as
+                # negative: the reader parses these back as field values.
+                if system.variables[name].domain.signed:
+                    fmt_parts.append("%lld")
+                    arg_parts.append(f"(long long)solver_get_value(ctx, {vid})")
+                else:
+                    fmt_parts.append("%llu")
+                    arg_parts.append(
+                        f"(unsigned long long)solver_get_value(ctx, {vid})")
         sol_fmt = "SOL " + " ".join(fmt_parts) + "\\n"
         sol_args = ", ".join(arg_parts)
 
@@ -266,8 +273,8 @@ class CSolvePerfHarnessGenerator:
         Emits: problem_add_var(tmp, ...); problem_add_constraint(tmp == lhs op rhs);
         Returns a VariableRefConstraint referencing the new temp.
         """
-        from zuspec.dataclasses.solver.core.variable import Variable as IRVariable
-        from zuspec.dataclasses.solver.core.domain import IntDomain
+        from zuspec.be.py.solver.core.variable import Variable as IRVariable
+        from zuspec.be.py.solver.core.domain import IntDomain
 
         # Recursively decompose nested BinOps
         left_c = binop.left

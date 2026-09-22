@@ -11,8 +11,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from zuspec.ir.core.expr import BinOp, UnaryOp, BoolOp, CmpOp
-from zuspec.dataclasses.solver.core.variable import Variable, VarKind
-from zuspec.dataclasses.solver.core.constraints import (
+from zuspec.be.py.solver.core.variable import Variable, VarKind
+from zuspec.be.py.solver.core.constraints import (
     ConstantConstraint,
     VariableRefConstraint,
     BinaryOpConstraint,
@@ -25,12 +25,12 @@ from zuspec.dataclasses.solver.core.constraints import (
     ImplicationConstraint,
     UniqueConstraint,
 )
-from zuspec.dataclasses.solver.core.variable import Variable, VarKind
-from zuspec.dataclasses.solver.core.domain import IntDomain
+from zuspec.be.py.solver.core.variable import Variable, VarKind
+from zuspec.be.py.solver.core.domain import IntDomain
 
 if TYPE_CHECKING:
-    from zuspec.dataclasses.solver.core.constraint_system import ConstraintSystem
-    from zuspec.dataclasses.solver.core.constraint import Constraint
+    from zuspec.be.py.solver.core.constraint_system import ConstraintSystem
+    from zuspec.be.py.solver.core.constraint import Constraint
 
 from .builder import SolveProblemBuilder
 from .problem import (
@@ -156,7 +156,7 @@ class IRTranslator:
 
     def _domain_bounds(self, var: Variable) -> Tuple[int, int, int, bool]:
         """Return (lo, hi, width, is_signed) from a Variable's domain."""
-        from zuspec.dataclasses.solver.core.domain import IntDomain
+        from zuspec.be.py.solver.core.domain import IntDomain
         domain = var.domain
         if not isinstance(domain, IntDomain):
             raise TranslationError(

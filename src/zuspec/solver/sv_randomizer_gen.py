@@ -61,8 +61,8 @@ class SVRandomizerGenerator:
         Returns (problem_bytes, var_id_map, fields) where fields is a list
         of (name, width, is_signed) tuples.
         """
-        from zuspec.dataclasses.solver._core_solve import _extract_struct_type
-        from zuspec.dataclasses.solver.frontend.constraint_system_builder import (
+        from zuspec.be.py.solver._core_solve import _extract_struct_type
+        from zuspec.be.py.solver.frontend.constraint_system_builder import (
             ConstraintSystemBuilder,
         )
         from zuspec.solver.ir_translator import IRTranslator
@@ -81,7 +81,7 @@ class SVRandomizerGenerator:
         sorted_vars = sorted(var_id_map.items(), key=lambda x: x[1])
         for name, vid in sorted_vars:
             var = system.variables[name]
-            from zuspec.dataclasses.solver.core.domain import IntDomain
+            from zuspec.be.py.solver.core.domain import IntDomain
             domain = var.domain
             width = domain.width if isinstance(domain, IntDomain) else 32
             is_signed = domain.signed if isinstance(domain, IntDomain) else False
