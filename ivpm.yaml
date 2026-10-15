@@ -1,26 +1,21 @@
 package:
-  name: zuspec-solver
+    name: zuspec-solver
 
-  dep-sets:
-  - name: use
-    deps: []
-  - name: default
-    uses: use
-  - name: default-dev
-    uses: dev
+    # default-dev first: `ivpm update` takes the FIRST dep-set when none is
+    # named, and CI names none. With the empty `use` set first, no venv was
+    # made and CI died at ./packages/python/bin/pip.
+    dep-sets:
+    - name: default-dev
+      uses: default
+      deps:
+      - name: pytest
+        src: pypi
 
-  - name: dev
-    uses: [use, dev-tools]
-    default-dep-set: default-dev
-    deps:
-    - name: zuspec-ir-core
-      url: https://github.com/zuspec/zuspec-ir-core.git
-    - name: dv-solve
-      url: https://github.com/fvutils/dv-solve.git
-      dep-set: dev
-
-  - name: dev-tools
-    default-dep-set: default
-    deps:
-    - name: pytest
-      src: pypi
+    - name: default
+      deps:
+      - name: zuspec-ir-core
+        url: https://github.com/zuspec/zuspec-ir-core.git
+      # The PyPI wheel carries the native library; a git checkout would
+      # need a CMake build first.
+      - name: dv-solve
+        src: pypi
