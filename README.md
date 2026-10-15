@@ -1,108 +1,28 @@
-# Zuspec Solver
+# zuspec-solver
 
-- Solver helpers -> optimized version of 
-- Full solver (PoC?)
-  - be-sw could use this for 'live' solving
-- Platform solver
-  - Helper libraries for compiled solving
-  - be-sw uses this
+Translates Zuspec IR solve problems for a constraint solver. Pure Python.
 
-Scalable solver:
-- Dynamically build-up problem to solve
-  - Creates a problem-solver object
-  - Construct expression objects (structs) to represent constraints
-    - Essentially want a type AST
-  -> Need a way to statically capture without running builder logic (?)
-    - DOES NOT need to be pretty. Just compiles
-  - Find ways to use JIT
-    - For expensive propagators
-    - For hot operations
-    - Replace OTF 
-  - Works on compound data objects (no separate vars)
-  - API accepts 
+[zuspec-ir-core](https://pypi.org/project/zuspec-ir-core/) collects an
+action's random fields and constraints into a `ScSolveProblem`.
+`zuspec.solver.translate` walks that problem once and hands each solver
+construct to a *sink*. The sink is the dv-solve builder, which produces a
+relocatable [dv-solve](https://pypi.org/project/dv-solve/) problem blob, or
+anything else with the same methods. So every backend that solves a Zuspec
+model shares one encoding and one list of refused constructs.
 
-  - Solver object responsible for finding a solution
-- Fixed value-generation function
-  - Given these 
-- 
+```python
+from zuspec.solver.translate import build_solve_blob, TranslateError
 
-struct S {
-    int a;
-    int b;
+blob, writeback = build_solve_blob(problem)   # problem: ScSolveProblem
+# writeback: object field slot -> solver var_id
+```
 
-    // a < b;
-}
+A constraint the solver cannot take raises `TranslateError` with its source
+location. It is never dropped.
 
-static S *p = 0;
+Used by [zuspec-be-bc](https://pypi.org/project/zuspec-be-bc/), the backend
+[pssc](https://pypi.org/project/pssc/) runs PSS on.
 
-struct expr_s {
-    int type;
-    union {
+## License
 
-    };
-};
-
-type_def -> solver_t
-            -> solver1 -> solution
-            -> solver2 -> solution (reuse? re-initialize?)
-
-- type_def is expression and type descriptors that define the solve problem
-- solver_t is a solve-problem-specific data structure
-  - Do learnings need to be reflected here?
-  - Maybe... certainly represents "best"
-- solver is created from solver_t when a solution is desired
-
-// Assume we're generating all of this.
-// - programmatically, by creating data structures
-// - statically/generatively, via codegen -> Save runtime from needing tp build up constraints
-// DON'T CARE about readability or ease of human construction
-
-// Building a solve-context definition
-// - Array of 
-// RefRoot is: root_index, offset, size/type (supports interpreter in type checking)
-// RefField is: root_expr, offset, size/type
-
-- "problem" setup:
-  - state and random variables
-  - constraints
-
-- "solution" setup:
-  - potentially all internal
-
-static __expr_1 = {
-
-}
-
-
-constraints[] = {
-    EXPR_LT(
-        EXPR_REF(self, &self->a), 
-        EXPR_REF(self, &self->b)&self->b)&p->a, &p->b)
-        // Root variable, offset
-
-}
-
-struct S_c {
-
-}
-
-
-
-
-The Zuspec Solver project contains several solver engines used 
----
-
-## DPI Integration
-
-The solver can be called from SystemVerilog testbenches via DPI-C.
-A Python code generator produces SV classes with an embedded constraint
-problem; the native solver runs at simulation time.
-
-See [docs/dpi_integration.md](docs/dpi_integration.md) for the full guide.
-
-## SolveProblemBuilder
-
-A growable alternative to the fixed-size `SolveProblem` API that never
-overflows.  Used internally by `IRTranslator` and the DPI code generator.
-
-See [docs/builder_api.md](docs/builder_api.md) for the API reference.
+Apache-2.0
