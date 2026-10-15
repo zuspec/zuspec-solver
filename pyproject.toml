@@ -17,6 +17,8 @@ dependencies = [
     "zuspec-dataclasses",
     "zuspec-be-sv",
     "zuspec-ir-core",
+    # zuspec.solver.translate builds dv-solve problem blobs.
+    "dv-solve",
 ]
 
 [project.optional-dependencies]
@@ -30,5 +32,5 @@ dev = [
 native = "zuspec.solver.backend:NativeSolverBackend"
 
 [tool.setuptools]
-packages = ["zuspec.solver"]
+packages = ["zuspec.solver", "zuspec.solver.translate"]
 package-dir = {"" = "src"}
